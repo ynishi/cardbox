@@ -14,8 +14,18 @@
 -- there to be called — which is also what lets the Teal-only tests check it.
 
 local type store = require("store")
+local reads = require("cardbox.find")
 
 local record cards
+   -- The read half: declared here, defined in `cardbox.find`. A caller holds one module —
+   -- a card is opened, written, closed, read and searched through `cards` — and the split
+   -- is only about where the source lives, because the query builder, the whitelists and
+   -- the lineage walk are a file's worth of policy on their own.
+   build_find: function(q: reads.Query): string, {any}, string
+   find: function(s: store, q: reads.Query): {reads.CardSummary}, string
+   list: function(s: store, opts: reads.ListOpts): {reads.CardSummary}, string
+   lineage: function(s: store, id: string, opts: reads.LineageOpts): reads.Lineage, string
+
    -- What `open` is given. `pkg` / `scenario` / `source` / `created_by` are required;
    -- `id` is the caller's own name for the card, and when it is absent one is minted.
    record OpenSpec
@@ -74,9 +84,10 @@ local record cards
       format: string
    end
 
-   -- A card as it reads now, folded from its stream. Step 3 builds the same shape out of
-   -- projection tables; until then this is the only reader, and it is the definition of
-   -- what the events add up to.
+   -- A card as it reads now. Two things produce this shape and have to agree: `cards.get`,
+   -- which reads the `cb_*` projection tables, and `cards.fold`, which adds the stream up
+   -- itself. The fold is the definition — the projection is only the same answer, kept
+   -- ready — and `cargo test` is where the two are held against each other.
    record CardView
       id: string
       pkg: string
@@ -418,11 +429,13 @@ function cards.close(s: store, id: string, outcome: cards.Outcome): store.Record
    return rec
 end
 
---- A card as it reads now, folded from its own stream.
+--- A card as it reads now, folded from its own stream, event by event.
 ---
---- Step 3 answers this from projection tables; this is the fold those tables have to
---- agree with, and it stays as the thing a rebuild is checked against.
-function cards.get(s: store, id: string): cards.CardView, string
+--- This is the definition of what a card's events add up to. `cards.get` answers the same
+--- shape out of the read models, which is faster and is what everything should call; this
+--- stays because a read model is only ever as right as the fold it claims to reproduce,
+--- and something has to be the claim. `cargo test` holds the two against each other.
+function cards.fold(s: store, id: string): cards.CardView, string
    local card, err = required_name(id, "id")
    if card == nil then
       return nil, err
@@ -498,5 +511,110 @@ function cards.get(s: store, id: string): cards.CardView, string
    end
    return view
 end
+
+--- A card as it reads now, out of the read models.
+---
+--- The same `CardView` as `cards.fold` and four small queries instead of the card's whole
+--- stream: `cb_cards` carries the scalars and the counts, `cb_lineage` the parents,
+--- `cb_checkpoints` the checkpoints. Nothing here folds anything — the fold happened once,
+--- in the projection, inside the transaction that moved its cursor.
+---
+--- `stats` and `cost` come back out of the JSON the close wrote rather than out of the
+--- flattened columns, so a run that put something of its own in `stats` gets it back. The
+--- columns are for `find` to compare against.
+---
+--- The refusals in the *write* paths (`append_samples` on a closed card, and the rest) go
+--- on reading the stream, not `cb_cards.state`. A refusal is about what the log said at
+--- the instant the write was declined, and the read model is a copy of the log — correct,
+--- caught up before every query, and still a copy. The write path should not be the place
+--- that finds out the copy is wrong.
+function cards.get(s: store, id: string): cards.CardView, string
+   local card, err = required_name(id, "id")
+   if card == nil then
+      return nil, err
+   end
+
+   local rows, qerr = s:query(
+      "SELECT id, pkg, scenario, source, created_by, note, state, opened_ms, closed_ms, "
+         .. "error, stats_json, cost_json, sample_batches, sample_rows, eval_count "
+         .. "FROM cb_cards WHERE id = ?",
+      { card }
+   )
+   if rows == nil then
+      return nil, qerr
+   end
+   if #rows == 0 then
+      return nil, "no card " .. card
+   end
+   local row = rows[1] as {string:any}
+
+   local view: cards.CardView = {
+      id = card,
+      pkg = row.pkg as string,
+      scenario = row.scenario as string,
+      source = row.source as string,
+      created_by = row.created_by as string,
+      note = row.note as string,
+      state = row.state as string,
+      opened_ms = row.opened_ms as integer,
+      closed_ms = row.closed_ms as integer,
+      error = row.error as string,
+      parents = {},
+      samples = {
+         batches = row.sample_batches as integer,
+         rows = row.sample_rows as integer,
+      },
+      evals = row.eval_count as integer,
+      checkpoints = {},
+   }
+
+   if row.stats_json ~= nil then
+      local stats, serr = s:json_decode(row.stats_json as string)
+      if stats == nil then
+         return nil, serr
+      end
+      view.stats = stats
+   end
+   if row.cost_json ~= nil then
+      local cost, cerr = s:json_decode(row.cost_json as string)
+      if cost == nil then
+         return nil, cerr
+      end
+      view.cost = cost
+   end
+
+   local parents, perr = s:query("SELECT parent FROM cb_lineage WHERE child = ? ORDER BY parent", { card })
+   if parents == nil then
+      return nil, perr
+   end
+   for i = 1, #parents do
+      view.parents[i] = (parents[i] as {string:any}).parent as string
+   end
+
+   local saved, kerr = s:query(
+      "SELECT blob, size, format FROM cb_checkpoints WHERE card_id = ? ORDER BY seq",
+      { card }
+   )
+   if saved == nil then
+      return nil, kerr
+   end
+   for i = 1, #saved do
+      local cp = saved[i] as {string:any}
+      view.checkpoints[i] = {
+         blob = cp.blob as string,
+         size = cp.size as integer,
+         format = cp.format as string,
+      }
+   end
+
+   return view
+end
+
+-- The read half, as `cards.*`. See the record at the top of this file for why it is
+-- declared here and written in `cardbox.find`.
+cards.build_find = reads.build_find
+cards.find = reads.find
+cards.list = reads.list
+cards.lineage = reads.lineage
 
 return cards

@@ -16,6 +16,8 @@ local record store
    append_if: function(self: store, stream: string, decision: string, kind: string, meta: any, data: any): Recorded, string
    read_stream: function(self: store, stream: string, kinds?: {string}): {Recorded}, string
    query: function(self: store, sql: string, params: {any}): {any}, string
+   catch_up: function(self: store): integer, string
+   rebuild: function(self: store): integer, string
    blob_put: function(self: store, bytes: string): Blob, string
    blob_get: function(self: store, hash: string): string, string
    blob_path: function(self: store, hash: string): string
