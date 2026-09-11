@@ -1,25 +1,28 @@
 # cardbox
 
-Teal project managed with [htl](https://github.com/ynishi/htl).
+A card is one run's immutable record — what it came from, what it cost, the samples it
+produced, how it scored, the checkpoint it left. `cardbox` keeps them in an append-only
+log so that a card exists from the moment a run starts rather than only when one
+succeeds, and so that nothing depending on a card can be written without it.
+
+The layering is Lua's own — mechanism apart from policy. **Rust is the mechanism**:
+`src/lib.rs` holds one eventsdb SQLite log under `<root>/cards.db` and a
+content-addressed blob directory under `<root>/blobs/`, and exposes them to Teal as
+`require("store")` — `append`, `append_if` (folding one of a fixed set of decisions
+inside the write), `read_stream`, a read-only SQL hatch, and `blob_put` / `blob_get`.
+**Teal is the policy**: `src/cardbox/init.tl` is where the kinds, the naming, the find
+DSL and the prune rules go, because changing those should cost no rebuild. **eventsdb**
+is the log underneath, with the per-stream ordering, the global positions and the
+retention guard the policy leans on.
 
 ```sh
 htl check .            # type-check + lints
-htl test               # tests/*_test.tl via htl.test
+htl test               # tests/*_test.tl via htl.test (Teal only: no Rust host)
 htl fmt .              # whitespace formatter
-htl pkg install        # fetch [deps] from mlua-pkg.toml
-cargo run              # the binary: preload, then src/main.tl (type-checked at build)
-                       # (src/main.tl requires the Rust `host`, so `htl run` cannot run it)
-cargo test             # the library's Rust test: the module loaded through preload
+cargo test             # the store, exercised from Lua through preload
+CARDBOX_ROOT=/tmp/box cargo run     # the binary: the root, and what is in the log
 ```
 
-Module: `src/cardbox/init.tl` (`require("cardbox")` from `src/` and `tests/`).
-
-`mlua-pkg.toml` `entry = "src/cardbox"` only matters to *consumers* that depend on this
-package through mlua-pkg: they get it as `require("cardbox")`. The Rust host is a library:
-`src/lib.rs` holds the `#[host_module]`, embeds this module, and registers both in
-`preload(&Htl)`. `src/main.rs` is a few lines on top of it — `preload`, then the entry
-script. Grow the library, not the binary.
-
-`src/host.d.tl` is generated from `#[host_module]` in `src/lib.rs`: `cargo build` writes it,
-and so does `htl dts` / `htl check` without building, so the Teal side always sees the
-current Rust signatures.
+The root is `CARDBOX_ROOT`, else `$HOME/.cardbox`. `src/store.d.tl` is generated from
+`#[host_module]` in `src/lib.rs`, so the Teal side always sees the current Rust
+signatures; `cargo build` writes it, and so does `htl dts` / `htl check`.

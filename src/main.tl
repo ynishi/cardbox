@@ -1,9 +1,15 @@
+-- The smoke path for the binary: open the store and say what is in it. Step 6 replaces
+-- this with the CLI (subcommand dispatch, JSON out).
+
 local cardbox = require("cardbox")
-local host = require("host") -- Rust side, see src/lib.rs (types: src/host.d.tl)
+local store = require("store") -- Rust side, see src/lib.rs (types: src/store.d.tl)
 
-local g = cardbox.greet(arg and arg[1] or "teal")
-print(g.text)
+print("cardbox " .. cardbox.version())
+print("root: " .. store:root())
 
-print(host:greet(g.who))
-local p: host.Point = host:scale({ x = 1, y = 2 }, 3)
-print("scaled:", p.x, p.y)
+local rows, err = store:query("SELECT count(*) AS n FROM events", {})
+if err ~= nil then
+   error(err)
+end
+local row = rows[1] as {string:any}
+print("events: " .. tostring(row.n))

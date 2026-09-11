@@ -7,6 +7,17 @@ edition = "2024"
 [dependencies]
 htl = "0.4"
 anyhow = "1"
+eventsdb = { version = "0.5.0", features = ["sqlite"] }
+# One current-thread runtime, owned by the store, which `block_on`s every call on it.
+# `time` as well as `rt`: eventsdb backs a contended write off with `tokio::time::sleep`,
+# and a runtime with no timer panics there instead of waiting.
+tokio = { version = "1", features = ["rt", "time"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
 
 # The Teal checker runs inside htl's proc macros; the dev profile would build it
 # unoptimised and make every `cargo build` that touches a .tl about 3x slower.
