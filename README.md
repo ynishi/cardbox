@@ -10,8 +10,12 @@ The layering is Lua's own — mechanism apart from policy. **Rust is the mechani
 content-addressed blob directory under `<root>/blobs/`, and exposes them to Teal as
 `require("store")` — `append`, `append_if` (folding one of a fixed set of decisions
 inside the write), `read_stream`, a read-only SQL hatch, and `blob_put` / `blob_get`.
-**Teal is the policy**: `src/cardbox/init.tl` is where the kinds, the naming, the find
-DSL and the prune rules go, because changing those should cost no rebuild. **eventsdb**
+**Teal is the policy**: `src/cardbox/cards.tl` is a card's life — `open` at the start of a
+run, `append_samples` / `record_eval` / `save_checkpoint` while it is open, `close` either
+way, and `get`, which folds the stream back into a card — and it is where the naming, the
+64 KB inline-or-blob threshold, the find DSL and the prune rules live, because changing
+those should cost no rebuild. Every function answers `value, err` and validates before it
+calls the store. **eventsdb**
 is the log underneath, with the per-stream ordering, the global positions and the
 retention guard the policy leans on.
 

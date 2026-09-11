@@ -19,6 +19,8 @@ local record store
    blob_put: function(self: store, bytes: string): Blob, string
    blob_get: function(self: store, hash: string): string, string
    blob_path: function(self: store, hash: string): string
+   json_encode: function(self: store, v: any): string, string
+   json_decode: function(self: store, text: string): any, string
    root: function(self: store): string
 end
 

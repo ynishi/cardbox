@@ -1,9 +1,14 @@
--- The policy side. Step 1 is the mechanism only, so this is a placeholder the later
--- steps grow into: `cards.open` / `append_samples` / `record_eval` / `save_checkpoint`
--- / `close`, the find DSL, and the prune rules all land here, above `require("store")`.
+-- The policy side, as one module. `cardbox.cards` is a card's life (open → samples /
+-- evals / checkpoints → close, and the fold that reads them back); the find DSL, the
+-- alias rules and the prune rules join it here as the later steps land.
+
+local type Cards = require("cardbox.cards")
 
 local record cardbox
+   cards: Cards
 end
+
+cardbox.cards = require("cardbox.cards")
 
 function cardbox.version(): string
    return "0.1.0"
