@@ -1,0 +1,14 @@
+[package]
+name = "cardbox"
+version = "0.1.0"
+edition = "2024"
+# authors / license / repository: fill in yourself
+
+[dependencies]
+htl = "0.4"
+anyhow = "1"
+
+# The Teal checker runs inside htl's proc macros; the dev profile would build it
+# unoptimised and make every `cargo build` that touches a .tl about 3x slower.
+[profile.dev.build-override]
+opt-level = 3

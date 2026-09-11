@@ -1,0 +1,8 @@
+[package]
+name = "cardbox"
+version = "0.1.0"
+# Consumers `require("cardbox")` -> this directory's init.tl
+entry = "src/cardbox"
+
+[deps]
+# lshape = { git = "https://github.com/ynishi/lshape", tag = "v0.1" }

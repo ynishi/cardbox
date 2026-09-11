@@ -1,0 +1,38 @@
+# htl project settings (htl check / htl test / htl fmt / include_tl! all read this).
+# Command-line flags and HTL_LINTS / HTL_LINT override it.
+
+[lint]
+# strict = true   # warnings and lints fail htl check (not htl test); lints fail
+#                   include_tl!; false makes the macro advisory
+
+# Per rule: htl check --list-lints names every rule with the level it has by
+# default, and the README's "Lints" section says how to change one.
+
+[fmt]
+indent = 3
+
+[check]
+# paths = ["mods", "~/.cache/sdk"]   # extra dirs require() resolves from while checking
+# (src/ and types/ are always searched; hand-written .d.tl go under types/)
+
+# Where this project accepts modules written outside it:
+# [[contract]]
+# dir = "mods"             # relative to this file; "sites/*" = each subdirectory
+# module = "Site"          # optional: only this module name in each dir
+#
+# The shape those modules must have is declared on the record itself, so the two
+# cannot drift apart:
+#
+#   local record defs
+#      record Mod              ---@contract     -- inherits `dir` above;
+#         name: string         ---@required     -- ---@contract("other") overrides it
+#         monsters: {Monster}  ---@required
+#         factions: {Faction}                   -- unmarked: for the mods that want it
+#      end
+#   end
+#
+# The host must enforce it too: htl::pkg::contract_resolvers(root, &config).
+# `htl check` reports `contract-unenforced` when that call is not in the Rust sources.
+# enforced_by = "mods/_validate.lua"   # ...or name where it is enforced instead,
+#                          # for a Lua-side validator, a sibling crate, generated
+#                          # code. The file has to exist; a missing one is reported.
