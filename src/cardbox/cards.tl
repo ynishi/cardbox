@@ -15,6 +15,7 @@
 
 local type store = require("store")
 local reads = require("cardbox.find")
+local aliases = require("cardbox.alias")
 
 local record cards
    -- The read half: declared here, defined in `cardbox.find`. A caller holds one module —
@@ -25,6 +26,19 @@ local record cards
    find: function(s: store, q: reads.Query): {reads.CardSummary}, string
    list: function(s: store, opts: reads.ListOpts): {reads.CardSummary}, string
    lineage: function(s: store, id: string, opts: reads.LineageOpts): reads.Lineage, string
+
+   -- The alias half, the same way: declared here, defined in `cardbox.alias`. A name for
+   -- a card, the history of every name it has had, and the promotion rule that moves one.
+   -- `get_by_alias` is the exception — it is written below rather than there, because it
+   -- ends in `cards.get` and a `cardbox.alias` that required this module back would be a
+   -- cycle. What it does before the `get` is `aliases.bound_card`.
+   alias: function(s: store, name: string, id: string, note?: string): store.Recorded, string
+   alias_release: function(s: store, name: string, note?: string): store.Recorded, string
+   get_by_alias: function(s: store, name: string): CardView, string
+   alias_list: function(s: store, opts?: aliases.ListOpts): {aliases.Entry}, string
+   alias_history: function(s: store, name: string): {aliases.Event}, string
+   promote: function(s: store, spec: aliases.PromoteSpec): aliases.Promotion, string
+   pick_best: function(candidates: {reads.CardSummary}, metric: string, min_n: integer): reads.CardSummary
 
    -- What `open` is given. `pkg` / `scenario` / `source` / `created_by` are required;
    -- `id` is the caller's own name for the card, and when it is absent one is minted.
@@ -88,6 +102,10 @@ local record cards
    -- which reads the `cb_*` projection tables, and `cards.fold`, which adds the stream up
    -- itself. The fold is the definition — the projection is only the same answer, kept
    -- ready — and `cargo test` is where the two are held against each other.
+   --
+   -- `aliases` is the one field the fold cannot answer. A name lives on its own stream,
+   -- so a card's events do not know what it is called; `cards.fold` leaves the list empty
+   -- and `cards.get` reads `cb_aliases`, which is what the projection is for.
    record CardView
       id: string
       pkg: string
@@ -105,6 +123,7 @@ local record cards
       samples: Samples
       evals: integer
       checkpoints: {Checkpoint}
+      aliases: {string}
    end
 end
 
@@ -452,6 +471,10 @@ function cards.fold(s: store, id: string): cards.CardView, string
       samples = { batches = 0, rows = 0 },
       evals = 0,
       checkpoints = {},
+      -- Empty, and not because this card has no names: a name is bound on `alias-<name>`
+      -- and this reads `card-<id>`. Asking the fold for it would mean reading every alias
+      -- stream in the store, which is the question the projection already answered.
+      aliases = {},
    }
    local opened = false
 
@@ -566,6 +589,7 @@ function cards.get(s: store, id: string): cards.CardView, string
       },
       evals = row.eval_count as integer,
       checkpoints = {},
+      aliases = {},
    }
 
    if row.stats_json ~= nil then
@@ -591,6 +615,14 @@ function cards.get(s: store, id: string): cards.CardView, string
       view.parents[i] = (parents[i] as {string:any}).parent as string
    end
 
+   local named, aerr = s:query("SELECT name FROM cb_aliases WHERE card_id = ? ORDER BY name", { card })
+   if named == nil then
+      return nil, aerr
+   end
+   for i = 1, #named do
+      view.aliases[i] = (named[i] as {string:any}).name as string
+   end
+
    local saved, kerr = s:query(
       "SELECT blob, size, format FROM cb_checkpoints WHERE card_id = ? ORDER BY seq",
       { card }
@@ -610,11 +642,31 @@ function cards.get(s: store, id: string): cards.CardView, string
    return view
 end
 
+--- The card a name means, in full.
+---
+--- `aliases.bound_card` resolves the name — that is where the name rule and the refusal
+--- for an unbound one live — and the rest is `cards.get`, so what comes back is the same
+--- `CardView` every other read answers with, aliases and all.
+function cards.get_by_alias(s: store, name: string): cards.CardView, string
+   local id, err = aliases.bound_card(s, name)
+   if id == nil then
+      return nil, err
+   end
+   return cards.get(s, id)
+end
+
 -- The read half, as `cards.*`. See the record at the top of this file for why it is
 -- declared here and written in `cardbox.find`.
 cards.build_find = reads.build_find
 cards.find = reads.find
 cards.list = reads.list
 cards.lineage = reads.lineage
+
+cards.alias = aliases.alias
+cards.alias_release = aliases.alias_release
+cards.alias_list = aliases.alias_list
+cards.alias_history = aliases.alias_history
+cards.promote = aliases.promote
+cards.pick_best = aliases.pick_best
 
 return cards

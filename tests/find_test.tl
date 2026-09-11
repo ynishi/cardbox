@@ -22,8 +22,8 @@ t.describe("cards.build_find", function()
       local sql, params, err = cards.build_find({ clauses = { clause("pkg", "=", "cot") } })
       t.expect(err):to_be_nil()
       t.expect(sql):to_equal(
-         "SELECT id, pkg, scenario, state, opened_ms, closed_ms, mean_score, n, pass_rate "
-            .. "FROM cb_cards WHERE pkg = ? "
+         "SELECT id, pkg, scenario, state, opened_ms, closed_ms, mean_score, n, pass_rate, "
+            .. "passed FROM cb_cards WHERE pkg = ? "
             .. "ORDER BY opened_ms DESC, opened_position DESC LIMIT 50 OFFSET 0"
       )
       t.expect(#params):to_equal(1)

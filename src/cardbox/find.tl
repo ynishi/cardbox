@@ -21,8 +21,13 @@
 local type store = require("store")
 
 local record find
-   -- What a card looks like in a list. The nine columns a reader scans before deciding
+   -- What a card looks like in a list. The ten columns a reader scans before deciding
    -- which card to open — not the card, which is `cards.get`.
+   --
+   -- All four of the flattened close numbers are here, `passed` included, because they
+   -- are also what a promotion ranks by: `cards.promote` chooses its winner out of a list
+   -- of these, so a metric a summary did not carry would be a metric nothing could be
+   -- ranked by (`cardbox.alias`, `METRICS`).
    record CardSummary
       id: string
       pkg: string
@@ -33,6 +38,7 @@ local record find
       mean_score: number
       n: integer
       pass_rate: number
+      passed: integer
    end
 
    record ListOpts
@@ -138,7 +144,7 @@ local DEFAULT_DEPTH = 3
 local MAX_DEPTH = 10
 
 local SUMMARY = "SELECT id, pkg, scenario, state, opened_ms, closed_ms, mean_score, n, "
-   .. "pass_rate FROM cb_cards"
+   .. "pass_rate, passed FROM cb_cards"
 
 -- The tiebreaker every ordering ends with. `opened_ms` is a millisecond clock and two
 -- cards opened in the same millisecond would otherwise come back in whatever order SQLite
@@ -171,6 +177,7 @@ local function row_summary(row: {string:any}): find.CardSummary
       mean_score = row.mean_score as number,
       n = row.n as integer,
       pass_rate = row.pass_rate as number,
+      passed = row.passed as integer,
    }
 end
 

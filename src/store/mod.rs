@@ -9,7 +9,7 @@ pub mod json;
 pub mod projection;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use eventsdb::sqlite::{ProjectionRunner, SqliteEventLog};
 use eventsdb::{Committed, EventLog, EventStore, Filter, Position};
@@ -18,7 +18,14 @@ use serde_json::{Map, Value as Json};
 use sha2::{Digest, Sha256};
 
 pub use json::Value;
-use projection::CardsProjection;
+use projection::{ALIAS_PREFIX, CardsProjection, STREAM_PREFIX};
+
+/// Projection names this build has retired, newest last.
+///
+/// A database written by one of them holds every event; what it does not hold is a cursor
+/// this build's projection can use. See [`Store::carry_forward`] for what is done about
+/// that, and [`projection`]'s module doc for why the name is the version.
+const RETIRED: [&str; 1] = ["cards_v1"];
 
 /// A Lua string, in and out, as bytes rather than as `&str`.
 ///
@@ -66,8 +73,8 @@ pub struct Blob {
 ///
 /// `command` is the single-writer lock, and it is the reason the decisions below can be
 /// trusted. `append_if` makes one stream's fold atomic, but a policy that reads one
-/// stream and then writes another — an alias bound only to a card that exists, the case
-/// step 4 is for — is two calls, and eventsdb cannot make those one. This process is the
+/// stream and then writes another — an alias bound only to a card that exists, which is
+/// what `bind_alias` is — is two calls, and eventsdb cannot make those one. This process is the
 /// only writer of this file, so holding `command` across the pair is what closes that
 /// window. Every write method takes it; `query` takes it too, because catching the read
 /// model up is itself a write.
@@ -96,11 +103,12 @@ impl Store {
         std::fs::create_dir_all(root)?;
         std::fs::create_dir_all(root.join("blobs"))?;
         let log = rt.block_on(SqliteEventLog::open(root.join("cards.db")))?;
-        let mut cards = log.runner(CardsProjection)?;
+        let mut cards = log.runner(CardsProjection::new())?;
         // `init` is idempotent and creates the tables. It runs on every open rather than
         // on the first one, because "the file exists" is not "the file has this version's
         // tables in it" — a store opened by an older build has the log and not the model.
         rt.block_on(cards.init())?;
+        Store::carry_forward(&rt, &log, &mut cards)?;
         Ok(Store {
             log,
             rt,
@@ -108,6 +116,85 @@ impl Store {
             command: Mutex::new(()),
             cards: Mutex::new(cards),
         })
+    }
+
+    /// Bring a database written under a retired projection name up to this one.
+    ///
+    /// The mechanism eventsdb gives is the checkpoint, keyed by the projection's name, and
+    /// the whole of the migration is which name has one: a retired name with a cursor and
+    /// a live name without is a file this build has not folded yet. The `cb_*` tables it
+    /// finds there were written by the old fold, so they are emptied and replayed rather
+    /// than added to — `rebuild()` does the reset and the rewind in one transaction, and
+    /// the counters this model keeps (`sample_rows`, `eval_count`, `cb_blobs.refs`) would
+    /// otherwise be counted a second time for every event the old cursor had already seen.
+    ///
+    /// **What this cannot do is remove the retired row.** `checkpoints` is reserved
+    /// against writes and the only cursor API is load and save — eventsdb 0.5 has no
+    /// "forget this consumer". So the retired name is dragged up to where the live model
+    /// stands instead. That is not cosmetic: retention names the consumer with the lowest
+    /// cursor and refuses to remove past it (`Error::ConsumerBehind`), so a row parked at
+    /// an old head would become the thing that blocks step 5's prune — on behalf of a
+    /// reader that does not exist. It is dragged on every open rather than only on the
+    /// migration, because the log grows between opens and that row does not.
+    fn carry_forward(
+        rt: &tokio::runtime::Runtime,
+        log: &SqliteEventLog,
+        cards: &mut ProjectionRunner<CardsProjection>,
+    ) -> anyhow::Result<()> {
+        let live = rt.block_on(log.checkpoint_load(CardsProjection::NAME))?;
+        let mut rebuilt = false;
+        for retired in RETIRED {
+            // A checkpoint is written only once a consumer has passed something, so a
+            // cursor still at the beginning means there is no row — and no row means no
+            // database was ever folded under that name. Saving one would *create* the
+            // consumer this method exists to keep from being a problem.
+            let at = rt.block_on(log.checkpoint_load(retired))?;
+            if at == Position::BEGINNING {
+                continue;
+            }
+            if live == Position::BEGINNING && !rebuilt {
+                rt.block_on(cards.rebuild())?;
+                rebuilt = true;
+            }
+            let now = rt.block_on(cards.position())?;
+            if at < now {
+                rt.block_on(log.checkpoint_save(retired, now))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The `card_opened` of `card_id`, or nothing if no card was opened under that id.
+    ///
+    /// One row: the decision that writes a `card_opened` is `unwritten`, so there is at
+    /// most one, and the filter reads it through the `(kind, position)` index rather than
+    /// through the card's whole stream.
+    fn card_opened(&self, card_id: &str) -> anyhow::Result<Option<Recorded>> {
+        let stream = format!("{STREAM_PREFIX}{card_id}");
+        let filter = Filter::kinds(["card_opened"]).streams([stream.as_str()]);
+        let page = self
+            .rt
+            .block_on(self.log.read_all(Position::BEGINNING, &filter, 1))?;
+        Ok(page.into_iter().next().map(recorded_from))
+    }
+
+    /// Append `{kind, meta, data}` to `stream` if `rule` says so. The caller holds
+    /// `command`.
+    fn decided(
+        &self,
+        stream: &str,
+        rule: Rule,
+        kind: &str,
+        meta: Json,
+        data: Json,
+    ) -> anyhow::Result<Option<Recorded>> {
+        let event = envelope(kind, meta, data);
+        let written = event.clone();
+        let kinds = rule.kinds();
+        let decide: eventsdb::Decision = Box::new(move |seen| rule.allows(seen).then_some(written));
+        let mut handle = self.log.stream_handle(stream);
+        let committed = self.rt.block_on(handle.append_if(kinds, decide))?;
+        Ok(committed.map(|c| recorded_of(stream, &event, c)))
     }
 
     /// The write lock. Poisoning is ignored on purpose: the guard protects an ordering
@@ -180,13 +267,98 @@ impl Store {
         data: Value,
     ) -> anyhow::Result<Option<Recorded>> {
         let _lock = self.command();
-        let rule = Rule::parse(decision)?;
-        let event = envelope(kind, meta.0, data.0);
-        let written = event.clone();
-        let decide: eventsdb::Decision = Box::new(move |seen| rule.allows(seen).then_some(written));
-        let mut handle = self.log.stream_handle(stream);
-        let committed = self.rt.block_on(handle.append_if(rule.kinds(), decide))?;
-        Ok(committed.map(|c| recorded_of(stream, &event, c)))
+        self.decided(stream, Rule::parse(decision)?, kind, meta.0, data.0)
+    }
+
+    /// Bind `name` to `card_id`, if that card was opened and the name does not already
+    /// mean it.
+    ///
+    /// **Why this is a method and not another decision string.** The invariant — an alias
+    /// points only at a card that exists — spans two streams, and `append_if` folds one.
+    /// So this is two calls: read `card-<card_id>` for its `card_opened`, then `append_if`
+    /// on `alias-<name>`. What makes the pair atomic is `command`, held across both, and
+    /// what makes that enough is that this process is the only writer of this file — the
+    /// design's reservation stream, and the BP note that a single local writer is a
+    /// legitimate answer to a cross-aggregate uniqueness rule rather than a shortcut.
+    /// Exposing an alias decision through `append_if` would let Teal make the second call
+    /// without the first, which is exactly the dangling alias this step is for.
+    ///
+    /// `Err` when no card was opened under `card_id`. `Ok(None)` — the decision declining
+    /// — when the name already means that card: a rebind to where the alias already points
+    /// asks for a state that holds, so it is idempotent and writes nothing. Rebinding to a
+    /// *different* card appends another `alias_bound` on the same stream, which is what
+    /// keeps the history: nothing is overwritten and nothing has to be released first.
+    pub fn bind_alias(
+        &self,
+        name: &str,
+        card_id: &str,
+        note: Option<String>,
+    ) -> anyhow::Result<Option<Recorded>> {
+        let _lock = self.command();
+        let Some(opened) = self.card_opened(card_id)? else {
+            return Err(anyhow::anyhow!("no card {card_id}"));
+        };
+        let mut meta = Map::new();
+        meta.insert("card_id".to_string(), Json::String(card_id.to_string()));
+        // The pkg is the card's own, read off the event that opened it, so `alias_list`
+        // can answer "the aliases in this pkg" out of the alias rows alone. Taking it from
+        // the caller would let the two disagree about one thing.
+        if let Some(pkg) = opened.meta.0.get("pkg").filter(|p| p.is_string()) {
+            meta.insert("pkg".to_string(), pkg.clone());
+        }
+        self.decided(
+            &alias_stream(name),
+            Rule::AliasNot(card_id.to_string()),
+            "alias_bound",
+            Json::Object(meta),
+            note_data(note),
+        )
+    }
+
+    /// Release `name`, if it currently means anything. `Ok(None)` when it does not.
+    ///
+    /// The event carries the card_id it released, so the history reads without a join and
+    /// a rebuild can tell "released from A" from "released from B".
+    pub fn release_alias(
+        &self,
+        name: &str,
+        note: Option<String>,
+    ) -> anyhow::Result<Option<Recorded>> {
+        let _lock = self.command();
+        let stream = alias_stream(name);
+        let data = note_data(note);
+        // The card_id comes out of the same fold that decides, not out of a read before
+        // it: the fold runs while the log holds the write lock, so the id the event
+        // carries is the binding that was there when it was released. The cell is how the
+        // finished event gets back here — a `Decision` is `FnOnce` and hands what it built
+        // to eventsdb rather than to its caller.
+        let captured: Arc<Mutex<Option<Map<String, Json>>>> = Arc::default();
+        let sink = Arc::clone(&captured);
+        let decide: eventsdb::Decision = Box::new(move |seen| {
+            let card_id = bound_to(seen)?;
+            let mut meta = Map::new();
+            meta.insert("card_id".to_string(), Json::String(card_id));
+            let event = envelope("alias_released", Json::Object(meta), data);
+            *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(event.clone());
+            Some(event)
+        });
+        let mut handle = self.log.stream_handle(&stream);
+        let committed = self
+            .rt
+            .block_on(handle.append_if(Rule::AliasBound.kinds(), decide))?;
+        let Some(at) = committed else {
+            return Ok(None);
+        };
+        let event = captured
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "an alias_released landed on {stream} that this store did not build"
+                )
+            })?;
+        Ok(Some(recorded_of(&stream, &event, at)))
     }
 
     /// The whole of `stream` in `seq` order, optionally only `kinds`.
@@ -326,7 +498,12 @@ impl Store {
 /// Each one is a question about a stream that has to be answered at the instant the
 /// write lands, and each names the kinds it needs: the fold is shown only those, which is
 /// the difference between reading a long stream and reading three events of it.
-#[derive(Clone, Copy)]
+///
+/// The first three are what `append_if` will look up by name. The two alias folds are
+/// not: they are reached only through [`Store::bind_alias`] and [`Store::release_alias`],
+/// because a bind that skipped the card read those methods do first is the bug the whole
+/// step is about. Teal chooses between the methods; it cannot assemble one.
+#[derive(Clone)]
 enum Rule {
     /// Nothing has been recorded on this stream yet.
     Unwritten,
@@ -334,6 +511,37 @@ enum Rule {
     OpenUnclosed,
     /// No `card_closed` is on the stream. The fold a close itself runs.
     ClosedAbsent,
+    /// This alias does not currently mean this card — either it means another one or it
+    /// means nothing. The fold a bind runs.
+    AliasNot(String),
+    /// This alias currently means something. The fold a release runs.
+    AliasBound,
+}
+
+/// What `alias-<name>` currently means: the card_id of the last `alias_bound` not undone
+/// by an `alias_released`, or nothing.
+///
+/// The fold both alias decisions are, and the one place the current binding is read from
+/// the log rather than from the read model. An `alias_bound` with no `meta.card_id` cannot
+/// be written by this store (`bind_alias` puts the id there), and reads as unbound here
+/// rather than as a binding to nothing; the projection reports the same event as corrupt
+/// when it folds it, which is where a reader would want to hear about it.
+fn bound_to(seen: &[eventsdb::Current]) -> Option<String> {
+    let mut bound = None;
+    for event in seen {
+        match event.kind() {
+            "alias_bound" => {
+                bound = event
+                    .get("meta")
+                    .and_then(|m| m.get("card_id"))
+                    .and_then(Json::as_str)
+                    .map(str::to_string);
+            }
+            "alias_released" => bound = None,
+            _ => {}
+        }
+    }
+    bound
 }
 
 impl Rule {
@@ -359,6 +567,7 @@ impl Rule {
             Rule::Unwritten => None,
             Rule::OpenUnclosed => Some(&["card_opened", "card_closed"]),
             Rule::ClosedAbsent => Some(&["card_closed"]),
+            Rule::AliasNot(_) | Rule::AliasBound => Some(&["alias_bound", "alias_released"]),
         }
     }
 
@@ -370,13 +579,33 @@ impl Rule {
                     && !seen.iter().any(|e| e.kind() == "card_closed")
             }
             Rule::ClosedAbsent => !seen.iter().any(|e| e.kind() == "card_closed"),
+            Rule::AliasNot(card_id) => bound_to(seen).as_deref() != Some(card_id.as_str()),
+            Rule::AliasBound => bound_to(seen).is_some(),
         }
     }
 }
 
 // ------------------------------------------------------------------ envelopes
 
-fn envelope(kind: &str, meta: Json, data: Json) -> Map<String, Json> {
+/// The stream an alias's events live on.
+fn alias_stream(name: &str) -> String {
+    format!("{ALIAS_PREFIX}{name}")
+}
+
+/// A note, as the `data` of an alias event. Absent when there is none, rather than an
+/// object with a null in it.
+fn note_data(note: Option<String>) -> Json {
+    match note {
+        Some(note) => {
+            let mut data = Map::new();
+            data.insert("note".to_string(), Json::String(note));
+            Json::Object(data)
+        }
+        None => Json::Null,
+    }
+}
+
+pub(crate) fn envelope(kind: &str, meta: Json, data: Json) -> Map<String, Json> {
     let mut event = Map::new();
     event.insert("kind".to_string(), Json::String(kind.to_string()));
     if !meta.is_null() {

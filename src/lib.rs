@@ -24,12 +24,13 @@ pub use store::{Blob, Recorded, Store};
 // `require` of a name nobody registered fails at the line that needs it rather than at
 // startup.
 const FIND: &[u8] = htl::include_tl_bytes!("src/cardbox/find.tl");
+const ALIAS: &[u8] = htl::include_tl_bytes!("src/cardbox/alias.tl");
 const CARDS: &[u8] = htl::include_tl_bytes!("src/cardbox/cards.tl");
 const MODULE: &[u8] = htl::include_tl_bytes!("src/cardbox/init.tl");
 
 /// Register what this crate provides on a fresh `Htl`: the Rust `store` module opened on
-/// `root`, then the Teal modules as `require("cardbox.find")`, `require("cardbox.cards")`
-/// and `require("cardbox")`.
+/// `root`, then the Teal modules as `require("cardbox.find")`, `require("cardbox.alias")`,
+/// `require("cardbox.cards")` and `require("cardbox")`.
 pub fn preload(h: &Htl, root: &Path) -> anyhow::Result<()> {
     Store::open(root)?.htl_preload(h)?;
     // Stripped bytecode: small, and with neither line numbers nor a chunk name, so a
@@ -40,6 +41,7 @@ pub fn preload(h: &Htl, root: &Path) -> anyhow::Result<()> {
     // `package.preload` when the `require` runs, so the order is not what makes this work
     // — it is what keeps the file honest about the dependencies.
     h.preload_bytes("cardbox.find", FIND)?;
+    h.preload_bytes("cardbox.alias", ALIAS)?;
     h.preload_bytes("cardbox.cards", CARDS)?;
     h.preload_bytes("cardbox", MODULE)?;
     Ok(())

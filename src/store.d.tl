@@ -14,6 +14,8 @@ local record store
    end
    append: function(self: store, stream: string, kind: string, meta: any, data: any): Recorded, string
    append_if: function(self: store, stream: string, decision: string, kind: string, meta: any, data: any): Recorded, string
+   bind_alias: function(self: store, name: string, card_id: string, note?: string): Recorded, string
+   release_alias: function(self: store, name: string, note?: string): Recorded, string
    read_stream: function(self: store, stream: string, kinds?: {string}): {Recorded}, string
    query: function(self: store, sql: string, params: {any}): {any}, string
    catch_up: function(self: store): integer, string
