@@ -156,13 +156,72 @@ cards.export(store)                                              -- the backup o
 cards.import(store, "/path/to/<root>/export/20250911T120000Z-0-42.jsonl")
 ```
 
+## CLI
+
+`cardbox` is a thin client of the Teal API and nothing else: every command below is one
+call into `cards.*`, with no privileged path of its own — no check, default or refusal the
+same call from Lua would not also get. The dispatch and the two parsers are
+`src/cardbox/cli.tl`, embedded and preloaded like every other module, so an HTTP or MCP
+adapter later is another client of the same API rather than a second implementation of it.
+
+| command | what it does |
+|---|---|
+| `open --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...] [--note N] [--id ID]` | open a card at the start of a run; `--created-by` defaults to `cardbox <version>` |
+| `samples <id> [--file rows.jsonl]` | one JSON object per line, from the file or from stdin |
+| `eval <id> --file eval.json` | record one eval result |
+| `checkpoint <id> --file weights.bin --format safetensors [--note N]` | save a checkpoint as a blob |
+| `close <id> [--ok \| --failed --error MSG] [--stats JSON] [--cost JSON]` | end the run, either way; `--ok` is the default |
+| `get <id>` | the card as it reads now |
+| `list [--pkg P] [--state S] [--limit N] [--offset N]` | the last cards, newest first |
+| `find --where 'col op value' [--where ...] [--order-by col] [--asc] [--limit N] [--offset N]` | one clause per `--where`, ANDed |
+| `lineage <id> [--depth N]` | parents, children, and the walk either way |
+| `alias set <name> <id> [--note N]` / `release <name>` / `get <name>` / `list [--pkg P] [--card ID]` / `history <name>` | the names over the cards |
+| `promote --alias A --pkg P [--scenario S] [--metric M] [--min-n N] [--note N]` | put a name on the best closed card of a pkg |
+| `prune --reason R (--pkg P \| --pkg-like PAT \| --older-than-ms N \| --id ID ...) [--state S ...] [--dry-run]` | remove cards, export first |
+| `prune-log [--limit N]` | what the removals left behind |
+| `export` / `import <file>` | the JSONL backup, and reading one back |
+| `version` / `root` / `catch-up` / `rebuild` | the store itself |
+| `help`, `--help`, no arguments | the usage text, exit 0 |
+
 ```sh
-htl check .            # type-check + lints
-htl test               # tests/*_test.tl via htl.test (Teal only: no Rust host)
-htl fmt .              # whitespace formatter
-cargo test             # the store, exercised from Lua through preload
-CARDBOX_ROOT=/tmp/box cargo run     # the binary: the root, and what is in the log
+cardbox open --pkg cot --scenario arith --source eval --parent cot_arith_20260101T000000_ab12cd
+cardbox samples cot_arith_20260911T101500_4f2a10 --file rows.jsonl
+cardbox close cot_arith_20260911T101500_4f2a10 --ok --stats '{"mean_score":0.81,"n":120}'
+cardbox find --where 'pkg = cot' --where 'mean_score > 0.5' --order-by mean_score
+cardbox promote --alias champion --pkg cot --min-n 50
 ```
+
+Output is JSON on stdout — one object or one array, compact, written by the store's own
+encoder. A refusal is the API's own sentence as `cardbox: <message>` on stderr with exit 1,
+and `--json` is accepted everywhere and means nothing, because the output is JSON either
+way. Two things about the JSON are worth knowing before a shell reads it: an empty list
+comes out as `{}` rather than `[]` (Lua cannot tell the two apart and the encoder picks the
+object — `jq` should count with `length` rather than compare against `[]`), and a field a
+card does not have is absent rather than null.
+
+A `--where` clause is `column op value`, the three separated by spaces: `mean_score > 0.5`
+is a number, `pkg = cot` is text, `pkg = "my pkg"` is text with a space in it, and
+`state in ["closed_ok","closed_failed"]` is a list. Which columns and which operators exist
+is `find.build_find`'s to say, and a mistyped one is refused with the whole whitelist in the
+message. `--pkg-like` is a SQL LIKE pattern with `ESCAPE '\'` behind it, so the pkg prefix
+`_test_` is written `--pkg-like '\_test\_%'`.
+
+## Verification
+
+```sh
+just pre-commit        # cargo fmt --check + htl fmt --check, cargo test + htl test,
+                       # clippy -D warnings, htl check .
+just e2e               # cargo install --path . then e2e/run.sh: the whole life of a card
+                       # through the installed binary, in a store under /tmp
+```
+
+The parts are recipes of their own (`just fmt` / `test` / `clippy` / `check` / `install`).
+`e2e/run.sh` opens two cards, writes samples from a file and from stdin, records an eval and
+a checkpoint, closes one each way, names and promotes, finds and walks the lineage, prunes a
+`_test_x` card dry and then for real, reads the journal, and imports the export into a
+second root — asserting at each step and ending with the refusal a closed card answers a
+write with. It is the only verification here that runs a process; everything else runs the
+Teal or the Rust in one.
 
 The root is `CARDBOX_ROOT`, else `$HOME/.cardbox`. `src/store.d.tl` is generated from
 `#[host_module]` in `src/store/mod.rs`, so the Teal side always sees the current Rust

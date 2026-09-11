@@ -28,10 +28,12 @@ const ALIAS: &[u8] = htl::include_tl_bytes!("src/cardbox/alias.tl");
 const PRUNE: &[u8] = htl::include_tl_bytes!("src/cardbox/prune.tl");
 const CARDS: &[u8] = htl::include_tl_bytes!("src/cardbox/cards.tl");
 const MODULE: &[u8] = htl::include_tl_bytes!("src/cardbox/init.tl");
+const CLI: &[u8] = htl::include_tl_bytes!("src/cardbox/cli.tl");
 
 /// Register what this crate provides on a fresh `Htl`: the Rust `store` module opened on
 /// `root`, then the Teal modules as `require("cardbox.find")`, `require("cardbox.alias")`,
-/// `require("cardbox.prune")`, `require("cardbox.cards")` and `require("cardbox")`.
+/// `require("cardbox.prune")`, `require("cardbox.cards")`, `require("cardbox")` and
+/// `require("cardbox.cli")`.
 pub fn preload(h: &Htl, root: &Path) -> anyhow::Result<()> {
     Store::open(root)?.htl_preload(h)?;
     // Stripped bytecode: small, and with neither line numbers nor a chunk name, so a
@@ -46,6 +48,10 @@ pub fn preload(h: &Htl, root: &Path) -> anyhow::Result<()> {
     h.preload_bytes("cardbox.prune", PRUNE)?;
     h.preload_bytes("cardbox.cards", CARDS)?;
     h.preload_bytes("cardbox", MODULE)?;
+    // Last, because it is the only one that requires the whole of the module above it. It
+    // is registered by `preload` rather than by the binary so that a test, or another
+    // crate, reaches the same dispatch the command line does (`src/tests/cli.rs`).
+    h.preload_bytes("cardbox.cli", CLI)?;
     Ok(())
 }
 

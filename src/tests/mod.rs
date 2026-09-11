@@ -2,14 +2,16 @@
 //! `preload`, so what is exercised is the module Teal actually gets rather than a Rust
 //! function standing in for it.
 //!
-//! Five files, by what they are about. [`store`] is the mechanism — appends, decisions,
+//! Six files, by what they are about. [`store`] is the mechanism — appends, decisions,
 //! blobs, the hatch. [`cards`] is a card's life through the policy module. [`read_models`]
 //! is the projection and the reads built on it. [`alias`] is the names over the top, and
 //! the migration the projection's own version needed. [`prune`] is the end of a card's
 //! life: the export that has to come first, the journal, the removal and the blob GC.
+//! [`cli`] is the command line over all of it, dispatched in process.
 
 mod alias;
 mod cards;
+mod cli;
 mod prune;
 mod read_models;
 mod store;
