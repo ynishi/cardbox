@@ -128,6 +128,19 @@ local OPS: {string:string} = {
    ["in"] = "IN",
 }
 
+-- What an operator needs after its placeholder. Only `like` has one, and it is the
+-- difference between a pattern that can quote a wildcard and one that cannot: SQLite's
+-- LIKE has **no** escape character unless the statement names one, so `\_` in a pattern
+-- would otherwise match a backslash followed by anything at all. With this, a caller can
+-- pass a literal through `cards.like_escape` and have it match itself — which is what a
+-- prune of the pkg `_test_` needs, `_` being a wildcard.
+--
+-- Every pattern that holds no backslash behaves exactly as it did without the clause, so
+-- this is not a change to what an existing query means.
+local OP_SUFFIX: {string:string} = {
+   ["like"] = " ESCAPE '\\'",
+}
+
 local OP_LIST = '=, !=, <, <=, >, >=, like, in'
 
 -- How many rows a query answers with when it does not say, and the most it will answer
@@ -258,7 +271,7 @@ function find.build_find(q: find.Query): string, {any}, string
             end
             parts[#parts + 1] = clause.column .. " IN (" .. table.concat(marks, ", ") .. ")"
          else
-            parts[#parts + 1] = clause.column .. " " .. op .. " ?"
+            parts[#parts + 1] = clause.column .. " " .. op .. " ?" .. (OP_SUFFIX[clause.op] or "")
             params[#params + 1] = clause.value
          end
       end

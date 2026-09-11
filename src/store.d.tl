@@ -12,6 +12,24 @@ local record store
       hash: string
       size: integer
    end
+   record ExportReport
+      file: string
+      from: integer
+      through: integer
+      events: integer
+   end
+   record ImportReport
+      events: integer
+      reproduced_coordinates: boolean
+   end
+   record RetainReport
+      removed: integer
+      streams: integer
+   end
+   record BlobGcReport
+      deleted: integer
+      bytes: integer
+   end
    append: function(self: store, stream: string, kind: string, meta: any, data: any): Recorded, string
    append_if: function(self: store, stream: string, decision: string, kind: string, meta: any, data: any): Recorded, string
    bind_alias: function(self: store, name: string, card_id: string, note?: string): Recorded, string
@@ -25,6 +43,10 @@ local record store
    blob_path: function(self: store, hash: string): string
    json_encode: function(self: store, v: any): string, string
    json_decode: function(self: store, text: string): any, string
+   export: function(self: store): ExportReport, string
+   import: function(self: store, path: string): ImportReport, string
+   retain_streams: function(self: store, streams: {string}): RetainReport, string
+   blob_gc: function(self: store): BlobGcReport, string
    root: function(self: store): string
 end
 

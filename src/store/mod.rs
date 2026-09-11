@@ -7,6 +7,7 @@
 
 pub mod json;
 pub mod projection;
+pub mod transfer;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -25,7 +26,7 @@ use projection::{ALIAS_PREFIX, CardsProjection, STREAM_PREFIX};
 /// A database written by one of them holds every event; what it does not hold is a cursor
 /// this build's projection can use. See [`Store::carry_forward`] for what is done about
 /// that, and [`projection`]'s module doc for why the name is the version.
-const RETIRED: [&str; 1] = ["cards_v1"];
+const RETIRED: [&str; 2] = ["cards_v1", "cards_v2"];
 
 /// A Lua string, in and out, as bytes rather than as `&str`.
 ///
@@ -62,6 +63,51 @@ pub struct Blob {
     /// Lowercase hex of the SHA-256 of the bytes. The file's name, and its identity.
     pub hash: String,
     pub size: u64,
+}
+
+/// What one [`Store::export`] wrote.
+///
+/// `file` is absent when there was nothing new: no file is created, `from` and `through`
+/// are both the chain's end, and `events` is 0. An export of nothing is not a file holding
+/// nothing.
+#[derive(TealRecord, Clone, Debug)]
+pub struct ExportReport {
+    pub file: Option<String>,
+    /// The position the export started after — the end of the confirmed chain.
+    pub from: u64,
+    /// The position of the last event written, or `from` when none was.
+    pub through: u64,
+    pub events: u64,
+}
+
+/// What one [`Store::import`] read back in.
+#[derive(TealRecord, Clone, Debug)]
+pub struct ImportReport {
+    pub events: u64,
+    /// Whether every event landed on the position it carried out of the log it came from.
+    /// True for a file imported in order into an empty store, which is what restoring a
+    /// backup is; false when it merged into a store that already had history, which
+    /// renumbers by design.
+    pub reproduced_coordinates: bool,
+}
+
+/// What one [`Store::retain_streams`] removed.
+#[derive(TealRecord, Clone, Debug)]
+pub struct RetainReport {
+    /// Events deleted, as eventsdb's retention ledger recorded them.
+    pub removed: u64,
+    /// How many distinct streams those events were spread over — the streams that actually
+    /// held something, which is at most the number asked for.
+    pub streams: u64,
+}
+
+/// What one [`Store::blob_gc`] deleted.
+#[derive(TealRecord, Clone, Debug)]
+pub struct BlobGcReport {
+    pub deleted: u64,
+    /// The sum of the sizes the projection recorded for them, not a measurement of the
+    /// filesystem: a blob whose file was already gone still counts the size its row held.
+    pub bytes: u64,
 }
 
 /// One eventsdb log, one content-addressed blob directory and one read model, under one
@@ -133,9 +179,15 @@ impl Store {
     /// "forget this consumer". So the retired name is dragged up to where the live model
     /// stands instead. That is not cosmetic: retention names the consumer with the lowest
     /// cursor and refuses to remove past it (`Error::ConsumerBehind`), so a row parked at
-    /// an old head would become the thing that blocks step 5's prune — on behalf of a
+    /// an old head would become the thing that blocks the prune — on behalf of a
     /// reader that does not exist. It is dragged on every open rather than only on the
     /// migration, because the log grows between opens and that row does not.
+    ///
+    /// **An open is not enough on its own.** The drag leaves the retired cursor where the
+    /// live model stood *then*, and every append after it leaves the row behind again — so
+    /// a store opened, written to and pruned in the one process would hit exactly the
+    /// `ConsumerBehind` this exists to prevent. [`Store::retain_streams`] runs it again
+    /// immediately before the delete, on the same reasoning and for the same row.
     fn carry_forward(
         rt: &tokio::runtime::Runtime,
         log: &SqliteEventLog,
@@ -226,7 +278,7 @@ impl Store {
 /// `errors = "return"`: every fallible method comes back Lua-style, `value, err`. An
 /// `Option` return then has three answers rather than two, which `append_if` needs —
 /// `rec, nil` wrote, `nil, err` failed, and `nil, nil` is the decision declining.
-#[host_module(name = "store", dts = "src/store.d.tl", errors = "return", records = [Recorded, Blob])]
+#[host_module(name = "store", dts = "src/store.d.tl", errors = "return", records = [Recorded, Blob, ExportReport, ImportReport, RetainReport, BlobGcReport])]
 impl Store {
     /// Append `{kind, meta, data}` to `stream`.
     ///
@@ -483,6 +535,64 @@ impl Store {
     /// a blob is bytes to this store and JSON only to whoever wrote it.
     pub fn json_decode(&self, text: &str) -> anyhow::Result<Value> {
         Ok(Value(serde_json::from_str(text)?))
+    }
+
+    /// Write everything the log holds past the end of the confirmed export chain to one
+    /// JSON Lines file under `<root>/export/`, and confirm it.
+    ///
+    /// This is the half of a prune that has to happen first, and the whole log is what it
+    /// takes: `Guard::Exported` chains the confirmed **unfiltered** receipts from position
+    /// 0 and refuses to remove past the chain's end, so an export of only the streams being
+    /// pruned would leave the chain — and therefore the guard — exactly where it was. See
+    /// [`transfer`] for the order and the reasoning; what the directory ends up being is an
+    /// append-only backup of the log, one file per call, which is what `import` reads.
+    ///
+    /// Nothing new is not an error and not an empty file: `file` comes back absent and
+    /// `events` is 0.
+    pub fn export(&self) -> anyhow::Result<ExportReport> {
+        let _lock = self.command();
+        self.run_export()
+    }
+
+    /// Read a JSON Lines file written by [`Store::export`] back into this log, and catch
+    /// the read models up.
+    ///
+    /// `seq` and `position` are this log's to assign; `kind`, `meta`, `data`, `epoch_ms`
+    /// and `_schema_version` travel unchanged. `reproduced_coordinates` says whether every
+    /// event landed back on the position it carried, which is true for a file imported in
+    /// order into an empty store — the check that a restore really is the same log rather
+    /// than the same events.
+    pub fn import(&self, path: &str) -> anyhow::Result<ImportReport> {
+        let _lock = self.command();
+        self.run_import(path)
+    }
+
+    /// Remove every event of `streams`, if the exports vouch for them and no read model
+    /// would be left behind, and give the freed pages back to the filesystem.
+    ///
+    /// `Guard::Exported`, never `Force`: the one operation here that can make a correct
+    /// read wrong is the one operation that asks permission. Both refusals come back as
+    /// errors that say what to do — run an export, or catch the named consumer up.
+    ///
+    /// `removed` counts events and `streams` counts the streams they were spread over,
+    /// which is at most the number asked for: a stream with nothing on it is not an error
+    /// and is not counted.
+    pub fn retain_streams(&self, streams: Vec<String>) -> anyhow::Result<RetainReport> {
+        let _lock = self.command();
+        self.run_retain(streams)
+    }
+
+    /// Delete every blob nothing points at any more, and the row that counted the
+    /// pointers.
+    ///
+    /// `cb_blobs.refs` is the projection's count — one per `samples_appended` or
+    /// `checkpoint_saved` naming the hash, one back per card the prune journal removed —
+    /// so a blob two cards share survives the first of them going. `cb_blobs` is this
+    /// crate's table rather than eventsdb's, which is why the hatch lets the row be
+    /// deleted at all.
+    pub fn blob_gc(&self) -> anyhow::Result<BlobGcReport> {
+        let _lock = self.command();
+        self.run_blob_gc()
     }
 
     /// The directory this store was opened on.

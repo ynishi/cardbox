@@ -14,7 +14,7 @@
 //!
 //! # The name is the version
 //!
-//! [`CardsProjection::NAME`] is `cards_v2`, and the suffix is the migration convention
+//! [`CardsProjection::NAME`] is `cards_v3`, and the suffix is the migration convention
 //! rather than decoration: a projection's name **is** the primary key of its checkpoint,
 //! so a shape change old rows cannot be carried into is done by renaming the projection.
 //! The new name has no checkpoint, so it starts at the beginning of the log and folds all
@@ -23,8 +23,10 @@
 //! changed fold over unchanged tables wants.
 //!
 //! `cards_v1` was this model without the two alias kinds and without `cb_aliases` /
-//! `cb_alias_log`. [`crate::Store::open`] carries a database written under that name
-//! forward; what it does and what it cannot do is documented there.
+//! `cb_alias_log`; `cards_v2` was it without `cards_pruned`, so a database folded by that
+//! build holds rows for cards a journal event has since removed. [`crate::Store::open`]
+//! carries a database written under either name forward; what it does and what it cannot
+//! do is documented there.
 //!
 //! Where this departs from the textbook (Marten's "build the new model beside the old one
 //! and switch when it has caught up"): the two versions here share the `cb_*` table names,
@@ -42,7 +44,7 @@
 //! keeps the refusal from ever being the thing that tells us.
 
 use eventsdb::sqlite::Projection;
-use eventsdb::sqlite::rusqlite::{self, Transaction};
+use eventsdb::sqlite::rusqlite::{self, OptionalExtension, Transaction};
 use eventsdb::{Error, Result};
 use serde_json::Value as Json;
 
@@ -51,6 +53,14 @@ pub const STREAM_PREFIX: &str = "card-";
 
 /// The stream prefix an alias's events live under: `alias-<name>`.
 pub const ALIAS_PREFIX: &str = "alias-";
+
+/// The one stream the prune journal lives on.
+///
+/// Not a prefix and not per card: it is the log of every removal there has been, in order,
+/// and it is the one stream retention never takes — which is what makes it the pointer
+/// event the removed history leaves behind. What went, when, why, and where the export
+/// that vouched for it is.
+pub const PRUNE_STREAM: &str = "prune";
 
 /// The read model over a card's five kinds and an alias's two.
 ///
@@ -69,8 +79,8 @@ impl Default for CardsProjection {
 
 impl CardsProjection {
     /// The consumer name, and so the identity of the cursor. See the module doc for what
-    /// the `_v2` is for.
-    pub const NAME: &'static str = "cards_v2";
+    /// the `_v3` is for.
+    pub const NAME: &'static str = "cards_v3";
 
     /// The projection this build folds under.
     pub fn new() -> CardsProjection {
@@ -97,7 +107,7 @@ impl CardsProjection {
     /// The kinds these streams carry. Naming them is not only a filter: it is what lets
     /// the runner read through the `(kind, position)` index instead of walking the whole
     /// log, and it is the reason `apply` may treat an unknown kind as a bug.
-    pub const KINDS: [&'static str; 7] = [
+    pub const KINDS: [&'static str; 8] = [
         "card_opened",
         "samples_appended",
         "eval_recorded",
@@ -105,6 +115,7 @@ impl CardsProjection {
         "card_closed",
         "alias_bound",
         "alias_released",
+        "cards_pruned",
     ];
 }
 
@@ -263,6 +274,31 @@ impl Projection for CardsProjection {
     /// An unknown kind is likewise an error. `kinds()` is what the runner filters on, so
     /// one arriving here means the filter and this match have drifted apart, and a fold
     /// that quietly ignored it would leave a read model missing rows with nothing saying so.
+    /// **Yes — and only because every removal announces itself first.**
+    ///
+    /// The default is `false`, and for an accumulating model the default is the right
+    /// answer: `sample_rows`, `eval_count` and `cb_blobs.refs` are running totals, and a
+    /// replay over a log missing part of its input produces a smaller number with nothing
+    /// about it saying so. What makes this model different is the shape of the only
+    /// removal it allows.
+    ///
+    /// A prune is `retain(Plan::Streams, ..)` over whole `card-<id>` streams, and a
+    /// `cards_pruned` event on [`PRUNE_STREAM`] is appended **before** it — that stream is
+    /// never itself retained, so the journal survives what it describes. On a rebuild the
+    /// pruned cards' events are gone, so no row is ever created for them and no counter
+    /// ever incremented; the journal event then replays over an absent card and
+    /// [`purge`] returns without touching anything. The totals come out the same as they
+    /// were, because the events that would have moved them and the event that moved them
+    /// back are both absent.
+    ///
+    /// That is the whole of the claim, and it is narrow on purpose: it holds for a
+    /// removal of whole card streams that a journal event announced, and it would not
+    /// hold for a bare [`eventsdb::sqlite::Plan::Before`] or `OlderThan` over this log.
+    /// Neither is reachable — [`crate::Store`] exposes `retain_streams` and nothing else.
+    fn tolerates_truncation(&self) -> bool {
+        true
+    }
+
     fn apply(&mut self, tx: &Transaction<'_>, event: &eventsdb::Recorded) -> Result<()> {
         let kind = event.kind();
         let seq = event.seq() as i64;
@@ -306,6 +342,10 @@ impl Projection for CardsProjection {
                 meta,
                 data,
             ),
+            "cards_pruned" => {
+                on_prune_stream(&event.stream, kind)?;
+                pruned(tx, data)
+            }
             other => Err(Error::storage(format!(
                 "the {} projection was handed a {other:?} event, which is not one of the \
                  kinds it asked for ({})",
@@ -612,7 +652,118 @@ fn alias_logged(
     Ok(())
 }
 
-/// One more thing points at these bytes. Step 5's GC is the reader: a blob whose `refs`
+/// The journal event's stream has to be the journal's.
+///
+/// The other two identities in this fold are read *out of* the stream name; this one is
+/// checked against a constant, because a `cards_pruned` is about a set of cards named in
+/// its own data and the stream carries no identity at all. One anywhere else is a write
+/// that went around [`crate::Store::retain_streams`].
+fn on_prune_stream(stream: &str, kind: &str) -> Result<()> {
+    if stream == PRUNE_STREAM {
+        return Ok(());
+    }
+    Err(Error::storage(format!(
+        "a {kind:?} event is on stream {stream:?}: the prune journal is the one stream \
+         {PRUNE_STREAM:?}"
+    )))
+}
+
+/// Cards have gone. Take them out of every table that holds one.
+///
+/// `data.cards` is the list; anything that is not a string in it is skipped rather than
+/// refused, on the same reading `opened` gives a malformed `parents`.
+fn pruned(tx: &Transaction<'_>, data: Option<&Json>) -> Result<()> {
+    let cards = data.and_then(|d| d.get("cards")).and_then(Json::as_array);
+    for card in cards.into_iter().flatten() {
+        if let Some(id) = card.as_str() {
+            purge(tx, id)?;
+        }
+    }
+    Ok(())
+}
+
+/// One card, out of the read models.
+///
+/// **The first line is what makes a rebuild work.** After the retain, a pruned card has no
+/// events, so a replay reaches this event with no row ever having been created — and every
+/// delete below, and every `refs` decrement, would then be a second application of a purge
+/// the first fold already did. So an absent card is nothing to do. Which is also the
+/// honest reading of the event: it says these cards are gone, and one that is not here is.
+///
+/// The alias check is under that gate rather than over it for the same reason. An aliased
+/// card is refused by the policy side (`cards.prune` skips it), so reaching this is a
+/// journal event somebody wrote by hand, and it is a fold error — but only while the card
+/// is still there to be pointed at. Once its events are gone the question no longer
+/// arises, and a rebuild that raised it would be a store that cannot be rebuilt.
+fn purge(tx: &Transaction<'_>, id: &str) -> Result<()> {
+    let present: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM cb_cards WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage)?;
+    if present.is_none() {
+        return Ok(());
+    }
+
+    let named: Option<String> = tx
+        .query_row(
+            "SELECT name FROM cb_aliases WHERE card_id = ?1 ORDER BY name LIMIT 1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage)?;
+    if let Some(name) = named {
+        return Err(Error::storage(format!(
+            "card {id} was pruned while the alias {name:?} still points at it: a card with \
+             a name is not prunable, and the name would be left pointing at nothing"
+        )));
+    }
+
+    // Row by row, and `UNION ALL`, because `refs` counts references and not distinct
+    // blobs: two sample batches that happened to hold the same bytes incremented it twice.
+    let hashes: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT blob FROM cb_samples WHERE card_id = ?1 AND blob IS NOT NULL \
+                 UNION ALL \
+                 SELECT blob FROM cb_checkpoints WHERE card_id = ?1 AND blob IS NOT NULL",
+            )
+            .map_err(storage)?;
+        let rows = stmt
+            .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))
+            .map_err(storage)?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(storage)?
+    };
+    for hash in hashes {
+        tx.execute(
+            "UPDATE cb_blobs SET refs = refs - 1 WHERE hash = ?1",
+            rusqlite::params![hash],
+        )
+        .map_err(storage)?;
+    }
+
+    // `cb_lineage` both ways. A pruned card that is somebody's parent is refused by the
+    // policy, so the `parent` half normally matches nothing; it is here because an edge
+    // naming a card that no longer exists is exactly the dangling row this whole purge is
+    // for.
+    for sql in [
+        "DELETE FROM cb_samples WHERE card_id = ?1",
+        "DELETE FROM cb_evals WHERE card_id = ?1",
+        "DELETE FROM cb_checkpoints WHERE card_id = ?1",
+        "DELETE FROM cb_lineage WHERE child = ?1 OR parent = ?1",
+        "DELETE FROM cb_cards WHERE id = ?1",
+    ] {
+        tx.execute(sql, rusqlite::params![id]).map_err(storage)?;
+    }
+    Ok(())
+}
+
+/// One more thing points at these bytes. The blob GC is the reader: a blob whose `refs`
 /// reach 0 after the events naming it are gone is the only one it may remove.
 fn reference_blob(tx: &Transaction<'_>, hash: &str, size: Option<i64>) -> Result<()> {
     tx.execute(

@@ -360,7 +360,9 @@ fn a_rebuild_reproduces_the_bindings_and_their_history() -> anyhow::Result<()> {
 /// aliases.
 ///
 /// The old build is reproduced by its *cursor*: a runner named `cards_v1` over the same
-/// events, which is what `Store::open` has to recognise. The tables that runner creates
+/// events, which is what `Store::open` has to recognise. Every retired name is carried the
+/// same way — `cards_v2`, the version before the prune journal, is the second case below
+/// and takes the same path through the same code. The tables that runner creates
 /// are this version's, so what this does not reproduce is the two alias tables being
 /// absent — `init` adds them on the way in either way, and they would be empty in both
 /// stories because a database written before them holds no alias events.
@@ -372,7 +374,7 @@ fn a_rebuild_reproduces_the_bindings_and_their_history() -> anyhow::Result<()> {
 #[test]
 fn a_database_written_under_the_old_projection_name_is_carried_forward() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    write_under_the_old_name(dir.path())?;
+    write_under_the_old_name(dir.path(), "cards_v1")?;
 
     let h = Htl::new()?;
     crate::preload(&h, dir.path())?;
@@ -396,7 +398,7 @@ fn a_database_written_under_the_old_projection_name_is_carried_forward() -> anyh
            'SELECT consumer, position FROM checkpoints ORDER BY consumer', {})
         assert(e2 == nil, tostring(e2))
         assert(#marks == 2, #marks)
-        assert(marks[1].consumer == 'cards_v1' and marks[2].consumer == 'cards_v2', marks[1].consumer)
+        assert(marks[1].consumer == 'cards_v1' and marks[2].consumer == 'cards_v3', marks[2].consumer)
         assert(marks[1].position == marks[2].position, 'the retired cursor is not behind')
 
         local rec, e3 = cards.alias(store, 'champion', 'mig_two')
@@ -412,14 +414,51 @@ fn a_database_written_under_the_old_projection_name_is_carried_forward() -> anyh
     Ok(())
 }
 
-/// Build a `cards.db` the way the previous commit would have left one: the same events,
-/// folded by a runner whose checkpoint is under `cards_v1`.
-fn write_under_the_old_name(root: &Path) -> anyhow::Result<()> {
+/// The name before this one takes the same path.
+///
+/// `cards_v2` is the model without `cards_pruned`: a database folded by it holds every row
+/// this build would have written and a cursor this build's projection cannot use. Nothing
+/// about the carry-forward is per name — this is here because "every retired name" is the
+/// claim, and one name is not evidence for it.
+#[test]
+fn the_name_this_build_retired_last_is_carried_forward_too() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    write_under_the_old_name(dir.path(), "cards_v2")?;
+
+    let h = Htl::new()?;
+    crate::preload(&h, dir.path())?;
+    let out: Vec<String> = eval(
+        &h,
+        r#"
+        local cards = require('cardbox').cards
+        local store = require('store')
+
+        assert(cards.get(store, 'mig_one').samples.rows == 2, 'counted once, not twice')
+        assert(#cards.list(store, {}) == 2, 'both cards are there')
+
+        -- And the prune this build added works on it, which is the reason the cursor had
+        -- to be carried at all: a retired row parked at an old head is `ConsumerBehind`.
+        local report, err = cards.prune(store, { ids = { 'mig_one' }, reason = 'migrated store' })
+        assert(err == nil, tostring(err))
+        assert(#report.pruned == 1 and report.pruned[1] == 'mig_one', tostring(err))
+
+        local out = {}
+        for i, entry in ipairs(cards.list(store, {})) do out[i] = entry.id end
+        return out
+        "#,
+    )?;
+    assert_eq!(out, ["mig_two"]);
+    Ok(())
+}
+
+/// Build a `cards.db` the way an earlier commit would have left one: the same events,
+/// folded by a runner whose checkpoint is under `name`.
+fn write_under_the_old_name(root: &Path, name: &str) -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()?;
     let log = rt.block_on(SqliteEventLog::open(root.join("cards.db")))?;
-    let mut runner = log.runner(CardsProjection::under("cards_v1"))?;
+    let mut runner = log.runner(CardsProjection::under(name))?;
     rt.block_on(runner.init())?;
 
     let opened = |pkg: &str| json!({ "pkg": pkg, "scenario": "arith", "source": "eval", "created_by": "the old build" });
@@ -453,7 +492,7 @@ fn write_under_the_old_name(root: &Path) -> anyhow::Result<()> {
 
     // What the migration has to recognise: a cursor under the old name and none under
     // this one.
-    assert!(rt.block_on(log.checkpoint_load("cards_v1"))? > Position::BEGINNING);
+    assert!(rt.block_on(log.checkpoint_load(name))? > Position::BEGINNING);
     assert_eq!(
         rt.block_on(log.checkpoint_load(CardsProjection::NAME))?,
         Position::BEGINNING

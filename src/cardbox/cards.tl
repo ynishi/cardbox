@@ -16,6 +16,7 @@
 local type store = require("store")
 local reads = require("cardbox.find")
 local aliases = require("cardbox.alias")
+local pruning = require("cardbox.prune")
 
 local record cards
    -- The read half: declared here, defined in `cardbox.find`. A caller holds one module —
@@ -39,6 +40,17 @@ local record cards
    alias_history: function(s: store, name: string): {aliases.Event}, string
    promote: function(s: store, spec: aliases.PromoteSpec): aliases.Promotion, string
    pick_best: function(candidates: {reads.CardSummary}, metric: string, min_n: integer): reads.CardSummary
+
+   -- The prune half, the same way: declared here, defined in `cardbox.prune`. What may be
+   -- removed, in what order it is removed, and the export the removal leans on. `prune`
+   -- is the whole sequence; `plan_prune` and `like_escape` are the two pieces of it that
+   -- decide something without a store, and `prune_log` is what a removal leaves behind.
+   prune: function(s: store, spec: pruning.PruneSpec): pruning.PruneReport, string
+   plan_prune: function(candidates: {reads.CardSummary}, aliased: {string:boolean}, parents: {string:boolean}, spec: pruning.PruneSpec): pruning.PrunePlan, string
+   like_escape: function(s: string): string
+   export: function(s: store): store.ExportReport, string
+   import: function(s: store, path: string): store.ImportReport, string
+   prune_log: function(s: store, opts?: pruning.LogOpts): {pruning.PruneEntry}, string
 
    -- What `open` is given. `pkg` / `scenario` / `source` / `created_by` are required;
    -- `id` is the caller's own name for the card, and when it is absent one is minted.
@@ -661,6 +673,13 @@ cards.build_find = reads.build_find
 cards.find = reads.find
 cards.list = reads.list
 cards.lineage = reads.lineage
+
+cards.prune = pruning.prune
+cards.plan_prune = pruning.plan_prune
+cards.like_escape = pruning.like_escape
+cards.export = pruning.export
+cards.import = pruning.import
+cards.prune_log = pruning.prune_log
 
 cards.alias = aliases.alias
 cards.alias_release = aliases.alias_release
