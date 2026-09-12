@@ -29,6 +29,11 @@
 
 local type store = require("store")
 local reads = require("cardbox.find")
+local list = require("htlx.list")
+-- For `millis()` alone. The `older_than_ms` cutoff is on a millisecond column and
+-- `os.time()` is whole seconds, so the arithmetic that bridged them was a clock this can
+-- now ask for directly.
+local time = require("std.time")
 
 local record prune
    -- What `prune` is told to remove. At least one of `pkg` / `pkg_like` /
@@ -110,17 +115,19 @@ local function string_list(v: any, field: string): {string}, string
    if type(v) ~= "table" then
       return nil, "prune takes " .. field .. " as an array of strings, got a " .. type(v)
    end
-   local list = v as {string}
-   if #list == 0 then
+   local values = v as {string}
+   if #values == 0 then
       return nil, "prune takes " .. field .. " as a non-empty array of strings"
    end
-   for i = 1, #list do
-      if type(list[i]) ~= "string" or list[i] == "" then
-         return nil, "prune takes " .. field .. " as an array of strings: "
-            .. field .. "[" .. tostring(i) .. "] is a " .. type(list[i])
-      end
+   -- The first element that is not a name, by index, because the refusal names it.
+   local bad = list.find_index(values, function(v2: string): boolean
+      return type(v2) ~= "string" or v2 == ""
+   end)
+   if bad ~= nil then
+      return nil, "prune takes " .. field .. " as an array of strings: "
+         .. field .. "[" .. tostring(bad) .. "] is a " .. type(values[bad])
    end
-   return list
+   return values
 end
 
 -- Everything about a spec that can be decided without looking at a card. Run before the
@@ -219,14 +226,7 @@ function prune.plan_prune(
       return nil, err
    end
 
-   local open_allowed = false
-   if spec.states ~= nil then
-      for i = 1, #spec.states do
-         if spec.states[i] == "open" then
-            open_allowed = true
-         end
-      end
-   end
+   local open_allowed = spec.states ~= nil and list.contains(spec.states, "open")
 
    local plan: prune.PrunePlan = {
       selected = {},
@@ -269,9 +269,9 @@ local function candidates(s: store, spec: prune.PruneSpec): {reads.CardSummary},
       clauses[#clauses + 1] = { column = "pkg", op = "like", value = spec.pkg_like }
    end
    if spec.older_than_ms ~= nil then
-   -- `os.time()` is seconds; the column is milliseconds. A cutoff computed here rather
+   -- `std.time.millis()` is the clock `opened_ms` is on. A cutoff computed here rather
    -- than in SQL is what keeps the whole selection one `find` with bound parameters.
-      local cutoff = (os.time() * 1000) - math.floor(spec.older_than_ms as number)
+      local cutoff = time.millis() - math.floor(spec.older_than_ms as number)
       clauses[#clauses + 1] = { column = "opened_ms", op = "<", value = cutoff }
    end
    if spec.states ~= nil then
@@ -291,9 +291,7 @@ local function candidates(s: store, spec: prune.PruneSpec): {reads.CardSummary},
       if page == nil then
          return nil, err
       end
-      for i = 1, #page do
-         out[#out + 1] = page[i]
-      end
+      out = list.concat(out, page)
       if #page < PAGE then
          return out
       end
@@ -305,24 +303,26 @@ end
 -- whole tables: `cb_aliases` holds one row per live name and `cb_lineage` one per edge, and
 -- a store where either is large enough for this to matter is a store where the prune
 -- itself is the larger cost.
+--
+-- Each comes back as the column mapped out of the rows and then `to_set`: both columns are
+-- NOT NULL, so the map never meets the nil it would refuse, and the set is what
+-- `plan_prune` indexes rather than searches.
 local function outside_facts(s: store): {string:boolean}, {string:boolean}, string
-   local named: {string:boolean} = {}
    local rows, err = s:query("SELECT DISTINCT card_id FROM cb_aliases", {})
    if rows == nil then
       return nil, nil, err
    end
-   for i = 1, #rows do
-      named[(rows[i] as {string:any}).card_id as string] = true
-   end
+   local named = list.to_set(list.map(rows, function(r: any): string
+      return (r as {string:any}).card_id as string
+   end))
 
-   local ancestors: {string:boolean} = {}
    local edges, eerr = s:query("SELECT DISTINCT parent FROM cb_lineage", {})
    if edges == nil then
       return nil, nil, eerr
    end
-   for i = 1, #edges do
-      ancestors[(edges[i] as {string:any}).parent as string] = true
-   end
+   local ancestors = list.to_set(list.map(edges, function(r: any): string
+      return (r as {string:any}).parent as string
+   end))
    return named, ancestors
 end
 
@@ -389,10 +389,9 @@ function prune.prune(s: store, spec: prune.PruneSpec): prune.PruneReport, string
       return nil, aerr
    end
 
-   local streams: {string} = {}
-   for i = 1, #plan.selected do
-      streams[i] = "card-" .. plan.selected[i]
-   end
+   local streams = list.map(plan.selected, function(id: string): string
+      return "card-" .. id
+   end)
    local removed, rerr = s:retain_streams(streams)
    if removed == nil then
       return nil, rerr
@@ -452,12 +451,9 @@ function prune.prune_log(s: store, opts?: prune.LogOpts): {prune.PruneEntry}, st
       return nil, err
    end
 
-   local out: {prune.PruneEntry} = {}
-   for i = #events, 1, -1 do
-      if #out >= limit then
-         return out
-      end
-      local e = events[i]
+   -- Newest first and no more than `limit` of them: the stream is read from its end, which
+   -- is `reverse` and then `take`, and each event is one entry.
+   return list.map(list.take(list.reverse(events), limit), function(e: store.Recorded): prune.PruneEntry
       local meta = e.meta as {string:any}
       local data = e.data as {string:any}
       local cards: {string} = {}
@@ -474,7 +470,7 @@ function prune.prune_log(s: store, opts?: prune.LogOpts): {prune.PruneEntry}, st
       if meta ~= nil and meta.count ~= nil then
          count = meta.count as integer
       end
-      out[#out + 1] = {
+      return {
          seq = e.seq,
          epoch_ms = e.epoch_ms,
          count = count,
@@ -482,8 +478,7 @@ function prune.prune_log(s: store, opts?: prune.LogOpts): {prune.PruneEntry}, st
          reason = reason,
          export_file = export_file,
       }
-   end
-   return out
+   end)
 end
 
 return prune

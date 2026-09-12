@@ -78,6 +78,6 @@ fn an_undeclared_option_is_refused_by_name() -> anyhow::Result<()> {
         return err
         "#,
     )?;
-    assert_eq!(message, "no such option: --scenarion");
+    assert_eq!(message, "unknown option --scenarion");
     Ok(())
 }

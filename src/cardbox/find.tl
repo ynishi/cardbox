@@ -94,29 +94,32 @@ end
 -- are in it because that is what they were flattened for, and `stats_json` / `cost_json`
 -- are not, because comparing text that happens to hold JSON is the thing the flattening
 -- replaced.
-local COLUMNS: {string:boolean} = {
-   id = true,
-   pkg = true,
-   scenario = true,
-   source = true,
-   created_by = true,
-   state = true,
-   opened_ms = true,
-   closed_ms = true,
-   mean_score = true,
-   n = true,
-   pass_rate = true,
-   passed = true,
-   elapsed_ms = true,
-   llm_calls = true,
-   sample_rows = true,
-   eval_count = true,
-   checkpoint_count = true,
+--
+-- One array read two ways: `list.to_set` for the membership a refusal is decided by, and
+-- `table.concat` for the sentence it is named in. They were two hand-kept spellings of the
+-- same seventeen names, which is one place for them to drift apart.
+local COLUMN_NAMES = {
+   "id",
+   "pkg",
+   "scenario",
+   "source",
+   "created_by",
+   "state",
+   "opened_ms",
+   "closed_ms",
+   "mean_score",
+   "n",
+   "pass_rate",
+   "passed",
+   "elapsed_ms",
+   "llm_calls",
+   "sample_rows",
+   "eval_count",
+   "checkpoint_count",
 }
 
-local COLUMN_LIST = "id, pkg, scenario, source, created_by, state, opened_ms, closed_ms, "
-   .. "mean_score, n, pass_rate, passed, elapsed_ms, llm_calls, sample_rows, eval_count, "
-   .. "checkpoint_count"
+local COLUMNS: {string:boolean} = list.to_set(COLUMN_NAMES)
+local COLUMN_LIST = table.concat(COLUMN_NAMES, ", ")
 
 -- The operators, mapped to what they are spelled as in SQL. `in` is the one that is not a
 -- binary comparison: it takes an array and expands to as many placeholders as it has
@@ -280,12 +283,9 @@ function find.build_find(q: find.Query): string, {any}, string
                return nil, nil, at .. ' uses "in", which takes a non-empty array of values, got a '
                   .. type(clause.value)
             end
-            local marks: {string} = {}
-            for j = 1, #values do
-               marks[j] = "?"
-               params[#params + 1] = values[j]
-            end
+            local marks = list.fill(#values, "?")
             parts[#parts + 1] = clause.column .. " IN (" .. table.concat(marks, ", ") .. ")"
+            params = list.concat(params, values)
          else
             parts[#parts + 1] = clause.column .. " " .. op .. " ?" .. (OP_SUFFIX[clause.op] or "")
             params[#params + 1] = clause.value
@@ -413,12 +413,12 @@ local function neighbours(s: store, sql: string, id: string): {string}, string
    if rows == nil then
       return nil, err
    end
-   local out: {string} = {}
-   for i = 1, #rows do
-      local row = rows[i] as {string:any}
-      out[i] = row.other as string
-   end
-   return as_list(out)
+   -- `list.map` rather than a loop that could leave a hole: `cb_lineage.child` and
+   -- `.parent` are both NOT NULL, so every row has an `other` and the map never meets the
+   -- nil it would refuse.
+   return as_list(list.map(rows, function(r: any): string
+      return (r as {string:any}).other as string
+   end))
 end
 
 --- Where a card came from and what came from it.

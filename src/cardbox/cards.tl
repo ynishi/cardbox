@@ -17,6 +17,7 @@ local type store = require("store")
 local reads = require("cardbox.find")
 local aliases = require("cardbox.alias")
 local pruning = require("cardbox.prune")
+local list = require("htlx.list")
 
 local record cards
    -- The read half: declared here, defined in `cardbox.find`. A caller holds one module —
@@ -184,11 +185,11 @@ local function not_open(s: store, id: string, doing: string): string
    if events == nil then
       return err
    end
-   for i = 1, #events do
-      local e = events[i]
-      if e ~= nil and e.kind == "card_closed" then
-         return "cannot " .. doing .. " card " .. id .. ": it is closed"
-      end
+   local closed = list.any(events, function(e: store.Recorded): boolean
+      return e ~= nil and e.kind == "card_closed"
+   end)
+   if closed then
+      return "cannot " .. doing .. " card " .. id .. ": it is closed"
    end
    return "cannot " .. doing .. " card " .. id .. ": no card was opened under that id"
 end
@@ -623,17 +624,17 @@ function cards.get(s: store, id: string): cards.CardView, string
    if parents == nil then
       return nil, perr
    end
-   for i = 1, #parents do
-      view.parents[i] = (parents[i] as {string:any}).parent as string
-   end
+   view.parents = list.map(parents, function(r: any): string
+      return (r as {string:any}).parent as string
+   end)
 
    local named, aerr = s:query("SELECT name FROM cb_aliases WHERE card_id = ? ORDER BY name", { card })
    if named == nil then
       return nil, aerr
    end
-   for i = 1, #named do
-      view.aliases[i] = (named[i] as {string:any}).name as string
-   end
+   view.aliases = list.map(named, function(r: any): string
+      return (r as {string:any}).name as string
+   end)
 
    local saved, kerr = s:query(
       "SELECT blob, size, format FROM cb_checkpoints WHERE card_id = ? ORDER BY seq",
@@ -642,14 +643,14 @@ function cards.get(s: store, id: string): cards.CardView, string
    if saved == nil then
       return nil, kerr
    end
-   for i = 1, #saved do
-      local cp = saved[i] as {string:any}
-      view.checkpoints[i] = {
+   view.checkpoints = list.map(saved, function(r: any): cards.Checkpoint
+      local cp = r as {string:any}
+      return {
          blob = cp.blob as string,
          size = cp.size as integer,
          format = cp.format as string,
       }
-   end
+   end)
 
    return view
 end

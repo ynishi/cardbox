@@ -6,12 +6,16 @@
 -- for anything a card is made of, and no check, default or refusal here that a caller
 -- going through `cards.*` from Lua would not also get. That is the point of the shape — a
 -- later HTTP or MCP adapter is another client of the same API rather than a second
--- implementation of it — and it is why the interesting parts of this file are the two
--- parsers rather than the dispatch.
+-- implementation of it — and it is why the interesting parts of this file are the specs and
+-- the `--where` parser rather than the dispatch.
 --
--- The parsers are separated out (`cli.parse`, `cli.parse_where`) for the same reason
--- `find.build_find` is: they decide the whole of what they decide from their arguments and
--- ask nothing of a store, so `htl test` pins them with no host in the room.
+-- What a `--key value` line comes to is `std.argparse`'s. Each command declares what it
+-- accepts — the options by name and shape, the positionals in order — and the host does the
+-- walking, the collecting and the refusing. What it has no opinion about is the inside of a
+-- `--where` argument, which is a small value syntax rather than an option, so that parser
+-- stays here (`cli.parse_where`). It is separated out for the reason `find.build_find` is:
+-- it decides the whole of what it decides from its argument and asks nothing of a store, so
+-- `htl test` pins it with no host in the room.
 --
 -- `cli.run` answers `text, err`, like everything else in this project. `src/main.tl` prints
 -- the text and turns the refusal into an exit status; nothing here writes to a stream or
@@ -22,125 +26,117 @@ local cards = require("cardbox.cards")
 local cardbox = require("cardbox")
 local type reads = require("cardbox.find")
 local list = require("htlx.list")
+local argparse = require("std.argparse")
 -- `trim` was written here twice over, once for the argument parser and once for the
--- JSON-ish value reader below it. It is `std.string`'s now: the same two patterns, in the
--- host rather than in this file.
+-- JSON-ish value reader below it, and the reader spelled its prefix and suffix tests as
+-- `sub` comparisons. All three are `std.string`'s now: the same patterns, in the host
+-- rather than in this file.
 local str = require("std.string")
 
 local record cli
-   -- What one command line came to. `positional` in the order it was given, `values` the
-   -- `--key value` pairs collected per key (a key given twice has two entries, which is
-   -- what `--parent` and `--where` are for), `flags` the ones that take no value.
-   record Args
-      positional: {string}
-      values: {string:{string}}
-      flags: {string:boolean}
-   end
-
-   -- What one command accepts. Both are sets rather than lists so that the parser can say
-   -- "no such option" without searching, and an option that is in neither is a mistake
-   -- rather than something quietly kept.
-   record Spec
-      keys: {string:boolean}
-      flags: {string:boolean}
-   end
 end
+
+-- The four shapes an option comes in, named once so that a spec reads as a table of what a
+-- command accepts rather than of type strings. `std.argparse` reads `--created-by` and
+-- `--created_by` as the same option `created_by`, which is why every name below is spelled
+-- with underscores and every name in the usage text with dashes.
+local TEXT: argparse.Flag = { type = "string" }
+local TEXTS: argparse.Flag = { type = "string", multiple = true }
+local WHOLE: argparse.Flag = { type = "integer" }
+local FLAG: argparse.Flag = { type = "boolean" }
 
 -- Every command takes `--json`. Output is JSON whether or not it is given — a command's
 -- answer is a value, and a shell reading one should not have to ask twice — so this is
 -- accepted and means nothing. It is here because a person who types it expects it to work,
--- and because leaving it out would make `--json` a spelling mistake.
+-- and because leaving it out would make `--json` an unknown option.
 local JSON_FLAG = "json"
 
-local function spec(keys: {string}, flags: {string}): cli.Spec
-   local f = list.to_set(flags)
-   f[JSON_FLAG] = true
-   return { keys = list.to_set(keys), flags = f }
+local function spec(
+   name: string,
+   flags: {string:argparse.Flag},
+   positionals?: {argparse.Positional}
+): argparse.Spec
+   flags[JSON_FLAG] = FLAG
+   return { name = "cardbox " .. name, flags = flags, positionals = positionals }
 end
 
---- Split a command line into positionals, `--key value` pairs and flags.
----
---- `--key=value` is the same as `--key value`. A key the spec does not name is refused by
---- name rather than kept for nobody to read: a typed `--scenarion` that went through as a
---- positional would open a card with the wrong shape and no complaint.
----
---- Repeats collect. `--parent a --parent b` is two parents and not the second one, which is
---- also what makes `--where`, `--id` and `--state` work.
-function cli.parse(argv: {string}, s: cli.Spec): cli.Args, string
-   local args: cli.Args = { positional = {}, values = {}, flags = {} }
-   local keys = s.keys
-   local flags = s.flags
+-- What `std.argparse` puts in front of everything it raises. Taken off again before the
+-- message reaches a person: which library read the command line is not something whoever
+-- mistyped an option has to know, and `src/main.rs` prints the rest of the sentence after
+-- `cardbox: `.
+local ARGPARSE = "argparse: "
 
-   local i = 1
-   while i <= #argv do
-      local a = argv[i]
-      if a:sub(1, 2) == "--" and #a > 2 then
-         local key = a:sub(3)
-         local inline: string
-         local eq = key:find("=", 1, true)
-         if eq ~= nil then
-            inline = key:sub(eq + 1)
-            key = key:sub(1, eq - 1)
-         end
-
-         if flags[key] then
-            if inline ~= nil then
-               return nil, "--" .. key .. " is a flag and takes no value"
-            end
-            args.flags[key] = true
-         elseif keys[key] then
-            local value = inline
-            if value == nil then
-               i = i + 1
-               value = argv[i]
-               if value == nil then
-                  return nil, "--" .. key .. " needs a value"
-               end
-            end
-            local values = args.values[key]
-            if values == nil then
-               values = {}
-               args.values[key] = values
-            end
-            values[#values + 1] = value
-         else
-            return nil, "no such option: --" .. key
-         end
-      else
-         args.positional[#args.positional + 1] = a
+--- Split a command line into options, their values and positionals, against `s`.
+---
+--- `--key=value` is the same as `--key value`, `--some-name` and `--some_name` address the
+--- same option, and an option declared `multiple` collects its repeats — which is what
+--- `--parent`, `--where`, `--id` and `--state` are for. An option the spec does not name is
+--- refused by name rather than kept for nobody to read: a typed `--scenarion` that went
+--- through as a positional would open a card with the wrong shape and no complaint.
+---
+--- `std.argparse` raises where this project answers, so the refusal is caught here and
+--- handed back as `nil, err` like every other one in this file.
+function cli.parse(argv: {string}, s: argparse.Spec): argparse.Result, string
+   local ok, answer = pcall(argparse.parse, argv, s)
+   if not ok then
+      local message = tostring(answer)
+      if str.starts_with(message, ARGPARSE) then
+         message = message:sub(#ARGPARSE + 1)
       end
-      i = i + 1
+      return nil, message
    end
-   return args
+   return answer as argparse.Result
 end
 
---- The last value given for `key`, or nil.
-function cli.value(args: cli.Args, key: string): string
-   local values = args.values[key]
+--- The last value given for `key`, or nil when it was never given.
+---
+--- "Last" is what an option declared `multiple` and given twice needs from a caller that
+--- wanted one: `--parent a --parent b` is two parents to `cli.list` and `b` to this.
+function cli.value(args: argparse.Result, key: string): string
+   local v = args.opts[key]
+   if v == nil then
+      return nil
+   end
+   if type(v) == "table" then
+      local values = v as {string}
+      if #values == 0 then
+         return nil
+      end
+      return values[#values]
+   end
+   return v as string
+end
+
+--- Every value given for `key`, in order, or nil when it was never given.
+---
+--- Nil rather than the empty list `std.argparse` answers an absent `multiple` option with,
+--- because "not given" and "given nothing" are different specs downstream: `prune` reads
+--- `ids = nil` as "not bounded by ids" and `ids = {}` as a mistake.
+function cli.list(args: argparse.Result, key: string): {string}
+   local values = args.opts[key] as {string}
    if values == nil or #values == 0 then
       return nil
    end
-   return values[#values]
-end
-
---- Every value given for `key`, in order, or nil when it was never given. Nil rather than
---- an empty list because "not given" and "given nothing" are different specs downstream:
---- `prune` reads `ids = nil` as "not bounded by ids" and `ids = {}` as a mistake.
-function cli.list(args: cli.Args, key: string): {string}
-   return args.values[key]
+   return values
 end
 
 --- The value given for `key` as a whole number, or nil when it was not given.
-function cli.integer(args: cli.Args, key: string): integer, string
-   local raw = cli.value(args, key)
-   if raw == nil then
-      return nil
-   end
-   local n = tonumber(raw)
-   if n == nil or n ~= math.floor(n) then
-      return nil, "--" .. key .. " takes a whole number, got " .. string.format("%q", raw)
-   end
-   return math.floor(n)
+---
+--- One that is not a whole number never reaches here: the option is declared `integer` and
+--- `cli.parse` is where it is refused, by name and with what was typed.
+function cli.integer(args: argparse.Result, key: string): integer
+   return args.opts[key] as integer
+end
+
+--- Whether the flag `key` was given. `--flag` is true and `--no-flag` is false.
+function cli.flag(args: argparse.Result, key: string): boolean
+   return args.opts[key] == true
+end
+
+--- The positional argument named `name`, or nil when it was not given. One the spec
+--- declared `required` never reaches here missing: `cli.parse` refuses that by name.
+function cli.arg(args: argparse.Result, name: string): string
+   return args.args[name] as string
 end
 
 -- ------------------------------------------------------------------ --where
@@ -194,8 +190,8 @@ local function scalar(text: string): any, string
    if n ~= nil then
       return n
    end
-   if s:sub(1, 1) == '"' then
-      if #s < 2 or s:sub(#s) ~= '"' then
+   if str.starts_with(s, '"') then
+      if #s < 2 or not str.ends_with(s, '"') then
          return nil, "a quoted value is not closed: " .. s
       end
       return unquote(s)
@@ -204,10 +200,11 @@ local function scalar(text: string): any, string
 end
 
 -- `[a, b, c]` as a list of scalars. A comma inside quotes does not separate, which is the
--- whole reason this is a scan rather than a `gmatch`.
+-- whole reason this is a scan rather than a `gmatch` — and the reason it is not
+-- `std.string.split` either, which would cut this one in the wrong place.
 local function array(text: string): {any}, string
    local s = str.trim(text)
-   if s:sub(#s) ~= "]" then
+   if not str.ends_with(s, "]") then
       return nil, "an array value is not closed: " .. s
    end
    local body = str.trim(s:sub(2, #s - 1))
@@ -265,7 +262,7 @@ function cli.parse_where(text: string): reads.Clause, string
    local raw = str.trim(rest as string)
    local value: any
    local err: string
-   if raw:sub(1, 1) == "[" then
+   if str.starts_with(raw, "[") then
       value, err = array(raw)
    else
       value, err = scalar(raw)
@@ -280,7 +277,9 @@ end
 
 -- The two ways bytes get in. `io` is used here and nowhere else in this project: reading
 -- what a person named on the command line is the CLI's own job, and a host method for it
--- would be a mechanism every other module could reach for.
+-- would be a mechanism every other module could reach for. It stays `io` rather than
+-- becoming `std.fs` because this htl does not carry that module — `htl resolve std.fs`
+-- answers with nothing on the search path.
 -- Always binary. A checkpoint has to be read that way — it is somebody else's format and
 -- a byte is a byte — and a JSONL file read the same way is the same bytes, so there is one
 -- reader here rather than two that differ on a platform this does not run on.
@@ -313,15 +312,15 @@ local function encode(s: store, v: any): string, string
    return s:json_encode(v)
 end
 
-local function need(args: cli.Args, at: integer, what: string): string, string
-   local v = args.positional[at]
-   if v == nil or v == "" then
-      return nil, "this command needs " .. what
-   end
-   return v
-end
-
-local OPEN = spec({ "pkg", "scenario", "source", "created-by", "parent", "note", "id" }, {})
+local OPEN = spec("open", {
+   pkg = TEXT,
+   scenario = TEXT,
+   source = TEXT,
+   created_by = TEXT,
+   parent = TEXTS,
+   note = TEXT,
+   id = TEXT,
+})
 
 local function cmd_open(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, OPEN)
@@ -331,7 +330,7 @@ local function cmd_open(s: store, argv: {string}): string, string
    -- Who wrote the card, when the caller does not say: this CLI, at the version that is
    -- running. A card's `created_by` is what a reader a year later has to tell two runs of
    -- the same scenario apart, so it is required by `cards.open` and defaulted here.
-   local created_by = cli.value(args, "created-by")
+   local created_by = cli.value(args, "created_by")
    if created_by == nil then
       created_by = "cardbox " .. cardbox.version()
    end
@@ -350,17 +349,14 @@ local function cmd_open(s: store, argv: {string}): string, string
    return encode(s, card)
 end
 
-local SAMPLES = spec({ "file" }, {})
+local SAMPLES = spec("samples", { file = TEXT }, { { name = "id", required = true } })
 
 local function cmd_samples(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, SAMPLES)
    if args == nil then
       return nil, perr
    end
-   local id, ierr = need(args, 1, "a card id")
-   if id == nil then
-      return nil, ierr
-   end
+   local id = cli.arg(args, "id")
 
    local text: string
    local rerr: string
@@ -377,15 +373,15 @@ local function cmd_samples(s: store, argv: {string}): string, string
    -- One JSON object per line, which is the shape a run writing samples as it produces
    -- them can append to. Blank lines are skipped; a line that is not JSON is named by its
    -- number, because a file of three hundred rows with one bad one is otherwise a hunt.
+   -- `std.string.split` is the cut, so the index a refusal names is the line it is on.
    local rows: {any} = {}
-   local n = 0
-   for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-      n = n + 1
-      local row = str.trim(line)
+   local lines = str.split(text, "\n")
+   for i = 1, #lines do
+      local row = str.trim(lines[i])
       if row ~= "" then
          local value, jerr = s:json_decode(row)
          if jerr ~= nil then
-            return nil, "line " .. tostring(n) .. " is not JSON: " .. jerr
+            return nil, "line " .. tostring(i) .. " is not JSON: " .. jerr
          end
          rows[#rows + 1] = value
       end
@@ -401,17 +397,14 @@ local function cmd_samples(s: store, argv: {string}): string, string
    return encode(s, appended)
 end
 
-local EVAL = spec({ "file" }, {})
+local EVAL = spec("eval", { file = TEXT }, { { name = "id", required = true } })
 
 local function cmd_eval(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, EVAL)
    if args == nil then
       return nil, perr
    end
-   local id, ierr = need(args, 1, "a card id")
-   if id == nil then
-      return nil, ierr
-   end
+   local id = cli.arg(args, "id")
    local file = cli.value(args, "file")
    if file == nil then
       return nil, "eval needs --file: the eval result as one JSON object"
@@ -432,17 +425,18 @@ local function cmd_eval(s: store, argv: {string}): string, string
    return encode(s, { id = id, seq = rec.seq, kind = rec.kind, epoch_ms = rec.epoch_ms })
 end
 
-local CHECKPOINT = spec({ "file", "format", "note" }, {})
+local CHECKPOINT = spec(
+   "checkpoint",
+   { file = TEXT, format = TEXT, note = TEXT },
+   { { name = "id", required = true } }
+)
 
 local function cmd_checkpoint(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, CHECKPOINT)
    if args == nil then
       return nil, perr
    end
-   local id, ierr = need(args, 1, "a card id")
-   if id == nil then
-      return nil, ierr
-   end
+   local id = cli.arg(args, "id")
    local file = cli.value(args, "file")
    if file == nil then
       return nil, "checkpoint needs --file: the checkpoint to save"
@@ -469,24 +463,25 @@ local function cmd_checkpoint(s: store, argv: {string}): string, string
    })
 end
 
-local CLOSE = spec({ "error", "stats", "cost" }, { "ok", "failed" })
+local CLOSE = spec(
+   "close",
+   { error = TEXT, stats = TEXT, cost = TEXT, ok = FLAG, failed = FLAG },
+   { { name = "id", required = true } }
+)
 
 local function cmd_close(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, CLOSE)
    if args == nil then
       return nil, perr
    end
-   local id, ierr = need(args, 1, "a card id")
-   if id == nil then
-      return nil, ierr
-   end
-   if args.flags["ok"] and args.flags["failed"] then
+   local id = cli.arg(args, "id")
+   if cli.flag(args, "ok") and cli.flag(args, "failed") then
       return nil, "close takes --ok or --failed, not both"
    end
 
    -- `--ok` is the default, and `cards.close` is what refuses the two ways this can
    -- disagree with itself: an ok close carrying an error, and a failed one without one.
-   local outcome: cards.Outcome = { ok = not args.flags["failed"] }
+   local outcome: cards.Outcome = { ok = not cli.flag(args, "failed") }
    outcome.error = cli.value(args, "error")
 
    local stats = cli.value(args, "stats")
@@ -517,44 +512,32 @@ local function cmd_close(s: store, argv: {string}): string, string
    return encode(s, { id = id, state = state, seq = rec.seq, epoch_ms = rec.epoch_ms })
 end
 
-local NOTHING = spec({}, {})
+local GET = spec("get", {}, { { name = "id", required = true } })
 
 local function cmd_get(s: store, argv: {string}): string, string
-   local args, perr = cli.parse(argv, NOTHING)
+   local args, perr = cli.parse(argv, GET)
    if args == nil then
       return nil, perr
    end
-   local id, ierr = need(args, 1, "a card id")
-   if id == nil then
-      return nil, ierr
-   end
-   local view, err = cards.get(s, id)
+   local view, err = cards.get(s, cli.arg(args, "id"))
    if view == nil then
       return nil, err
    end
    return encode(s, view)
 end
 
-local LIST = spec({ "pkg", "state", "limit", "offset" }, {})
+local LIST = spec("list", { pkg = TEXT, state = TEXT, limit = WHOLE, offset = WHOLE })
 
 local function cmd_list(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, LIST)
    if args == nil then
       return nil, perr
    end
-   local limit, lerr = cli.integer(args, "limit")
-   if lerr ~= nil then
-      return nil, lerr
-   end
-   local offset, oerr = cli.integer(args, "offset")
-   if oerr ~= nil then
-      return nil, oerr
-   end
    local rows, err = cards.list(s, {
       pkg = cli.value(args, "pkg"),
       state = cli.value(args, "state"),
-      limit = limit,
-      offset = offset,
+      limit = cli.integer(args, "limit"),
+      offset = cli.integer(args, "offset"),
    })
    if rows == nil then
       return nil, err
@@ -562,7 +545,13 @@ local function cmd_list(s: store, argv: {string}): string, string
    return encode(s, rows)
 end
 
-local FIND = spec({ "where", "order-by", "limit", "offset" }, { "asc" })
+local FIND = spec("find", {
+   where = TEXTS,
+   order_by = TEXT,
+   limit = WHOLE,
+   offset = WHOLE,
+   asc = FLAG,
+})
 
 local function cmd_find(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, FIND)
@@ -580,21 +569,13 @@ local function cmd_find(s: store, argv: {string}): string, string
          clauses[i] = clause
       end
    end
-   local limit, lerr = cli.integer(args, "limit")
-   if lerr ~= nil then
-      return nil, lerr
-   end
-   local offset, oerr = cli.integer(args, "offset")
-   if oerr ~= nil then
-      return nil, oerr
-   end
 
    local rows, err = cards.find(s, {
       clauses = clauses,
-      order_by = cli.value(args, "order-by"),
-      desc = not args.flags["asc"],
-      limit = limit,
-      offset = offset,
+      order_by = cli.value(args, "order_by"),
+      desc = not cli.flag(args, "asc"),
+      limit = cli.integer(args, "limit"),
+      offset = cli.integer(args, "offset"),
    })
    if rows == nil then
       return nil, err
@@ -602,53 +583,46 @@ local function cmd_find(s: store, argv: {string}): string, string
    return encode(s, rows)
 end
 
-local LINEAGE = spec({ "depth" }, {})
+local LINEAGE = spec("lineage", { depth = WHOLE }, { { name = "id", required = true } })
 
 local function cmd_lineage(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, LINEAGE)
    if args == nil then
       return nil, perr
    end
-   local id, ierr = need(args, 1, "a card id")
-   if id == nil then
-      return nil, ierr
-   end
-   local depth, derr = cli.integer(args, "depth")
-   if derr ~= nil then
-      return nil, derr
-   end
-   local tree, err = cards.lineage(s, id, { depth = depth })
+   local id = cli.arg(args, "id")
+   local tree, err = cards.lineage(s, id, { depth = cli.integer(args, "depth") })
    if tree == nil then
       return nil, err
    end
    return encode(s, tree)
 end
 
-local ALIAS_NOTE = spec({ "note" }, {})
-local ALIAS_LIST = spec({ "pkg", "card" }, {})
+local ALIAS_SET = spec(
+   "alias set",
+   { note = TEXT },
+   { { name = "name", required = true }, { name = "id", required = true } }
+)
+local ALIAS_RELEASE = spec("alias release", { note = TEXT }, { { name = "name", required = true } })
+local ALIAS_GET = spec("alias get", {}, { { name = "name", required = true } })
+local ALIAS_LIST = spec("alias list", { pkg = TEXT, card = TEXT })
+local ALIAS_HISTORY = spec("alias history", {}, { { name = "name", required = true } })
 
 -- `alias` is the one command with a word of its own after it. The five things that can be
--- done to a name are one subject, and five top-level commands would not say so.
+-- done to a name are one subject, and five top-level commands would not say so. The word is
+-- taken off here rather than declared as a positional, because each of the five accepts
+-- something different after it and a spec that covered all five would refuse none of them.
 local function cmd_alias(s: store, argv: {string}): string, string
    local what = argv[1]
-   local rest: {string} = {}
-   for i = 2, #argv do
-      rest[i - 1] = argv[i]
-   end
+   local rest = list.drop(argv, 1)
 
    if what == "set" then
-      local args, perr = cli.parse(rest, ALIAS_NOTE)
+      local args, perr = cli.parse(rest, ALIAS_SET)
       if args == nil then
          return nil, perr
       end
-      local name, nerr = need(args, 1, "an alias name")
-      if name == nil then
-         return nil, nerr
-      end
-      local id, ierr = need(args, 2, "a card id")
-      if id == nil then
-         return nil, ierr
-      end
+      local name = cli.arg(args, "name")
+      local id = cli.arg(args, "id")
       local rec, err = cards.alias(s, name, id, cli.value(args, "note"))
       if err ~= nil then
          return nil, err
@@ -657,29 +631,22 @@ local function cmd_alias(s: store, argv: {string}): string, string
       -- is not a failure and not a write, and `changed` is which of the two happened.
       return encode(s, { alias = name, card_id = id, changed = rec ~= nil })
    elseif what == "release" then
-      local args, perr = cli.parse(rest, ALIAS_NOTE)
+      local args, perr = cli.parse(rest, ALIAS_RELEASE)
       if args == nil then
          return nil, perr
       end
-      local name, nerr = need(args, 1, "an alias name")
-      if name == nil then
-         return nil, nerr
-      end
+      local name = cli.arg(args, "name")
       local rec, err = cards.alias_release(s, name, cli.value(args, "note"))
       if err ~= nil then
          return nil, err
       end
       return encode(s, { alias = name, released = rec ~= nil })
    elseif what == "get" then
-      local args, perr = cli.parse(rest, NOTHING)
+      local args, perr = cli.parse(rest, ALIAS_GET)
       if args == nil then
          return nil, perr
       end
-      local name, nerr = need(args, 1, "an alias name")
-      if name == nil then
-         return nil, nerr
-      end
-      local view, err = cards.get_by_alias(s, name)
+      local view, err = cards.get_by_alias(s, cli.arg(args, "name"))
       if view == nil then
          return nil, err
       end
@@ -698,15 +665,11 @@ local function cmd_alias(s: store, argv: {string}): string, string
       end
       return encode(s, entries)
    elseif what == "history" then
-      local args, perr = cli.parse(rest, NOTHING)
+      local args, perr = cli.parse(rest, ALIAS_HISTORY)
       if args == nil then
          return nil, perr
       end
-      local name, nerr = need(args, 1, "an alias name")
-      if name == nil then
-         return nil, nerr
-      end
-      local events, err = cards.alias_history(s, name)
+      local events, err = cards.alias_history(s, cli.arg(args, "name"))
       if events == nil then
          return nil, err
       end
@@ -717,23 +680,26 @@ local function cmd_alias(s: store, argv: {string}): string, string
       .. string.format("%q", tostring(what))
 end
 
-local PROMOTE = spec({ "alias", "pkg", "scenario", "metric", "min-n", "note" }, {})
+local PROMOTE = spec("promote", {
+   alias = TEXT,
+   pkg = TEXT,
+   scenario = TEXT,
+   metric = TEXT,
+   min_n = WHOLE,
+   note = TEXT,
+})
 
 local function cmd_promote(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, PROMOTE)
    if args == nil then
       return nil, perr
    end
-   local min_n, merr = cli.integer(args, "min-n")
-   if merr ~= nil then
-      return nil, merr
-   end
    local done, err = cards.promote(s, {
       alias = cli.value(args, "alias"),
       pkg = cli.value(args, "pkg"),
       scenario = cli.value(args, "scenario"),
       metric = cli.value(args, "metric"),
-      min_n = min_n,
+      min_n = cli.integer(args, "min_n"),
       note = cli.value(args, "note"),
    })
    if done == nil then
@@ -742,16 +708,20 @@ local function cmd_promote(s: store, argv: {string}): string, string
    return encode(s, done)
 end
 
-local PRUNE = spec({ "reason", "pkg", "pkg-like", "older-than-ms", "id", "state" }, { "dry-run" })
+local PRUNE = spec("prune", {
+   reason = TEXT,
+   pkg = TEXT,
+   pkg_like = TEXT,
+   older_than_ms = WHOLE,
+   id = TEXTS,
+   state = TEXTS,
+   dry_run = FLAG,
+})
 
 local function cmd_prune(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, PRUNE)
    if args == nil then
       return nil, perr
-   end
-   local older, oerr = cli.integer(args, "older-than-ms")
-   if oerr ~= nil then
-      return nil, oerr
    end
    -- `--pkg-like` is a LIKE pattern and reaches `cards.prune` as one: `%` and `_` in it
    -- are wildcards, and the query carries `ESCAPE '\'`, so the pkg prefix `_test_` is
@@ -759,11 +729,11 @@ local function cmd_prune(s: store, argv: {string}): string, string
    local report, err = cards.prune(s, {
       reason = cli.value(args, "reason"),
       pkg = cli.value(args, "pkg"),
-      pkg_like = cli.value(args, "pkg-like"),
-      older_than_ms = older,
+      pkg_like = cli.value(args, "pkg_like"),
+      older_than_ms = cli.integer(args, "older_than_ms"),
       ids = cli.list(args, "id"),
       states = cli.list(args, "state"),
-      dry_run = args.flags["dry-run"],
+      dry_run = cli.flag(args, "dry_run"),
    })
    if report == nil then
       return nil, err
@@ -771,26 +741,24 @@ local function cmd_prune(s: store, argv: {string}): string, string
    return encode(s, report)
 end
 
-local PRUNE_LOG = spec({ "limit" }, {})
+local PRUNE_LOG = spec("prune-log", { limit = WHOLE })
 
 local function cmd_prune_log(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, PRUNE_LOG)
    if args == nil then
       return nil, perr
    end
-   local limit, lerr = cli.integer(args, "limit")
-   if lerr ~= nil then
-      return nil, lerr
-   end
-   local entries, err = cards.prune_log(s, { limit = limit })
+   local entries, err = cards.prune_log(s, { limit = cli.integer(args, "limit") })
    if entries == nil then
       return nil, err
    end
    return encode(s, entries)
 end
 
+local EXPORT = spec("export", {})
+
 local function cmd_export(s: store, argv: {string}): string, string
-   local args, perr = cli.parse(argv, NOTHING)
+   local args, perr = cli.parse(argv, EXPORT)
    if args == nil then
       return nil, perr
    end
@@ -801,16 +769,14 @@ local function cmd_export(s: store, argv: {string}): string, string
    return encode(s, report)
 end
 
+local IMPORT = spec("import", {}, { { name = "file", required = true } })
+
 local function cmd_import(s: store, argv: {string}): string, string
-   local args, perr = cli.parse(argv, NOTHING)
+   local args, perr = cli.parse(argv, IMPORT)
    if args == nil then
       return nil, perr
    end
-   local path, ferr = need(args, 1, "the path of an export file")
-   if path == nil then
-      return nil, ferr
-   end
-   local report, err = cards.import(s, path)
+   local report, err = cards.import(s, cli.arg(args, "file"))
    if report == nil then
       return nil, err
    end
@@ -881,6 +847,10 @@ local USAGE = table.concat({
 }, "\n")
 
 --- The usage text, which is what `help`, `--help` and no arguments at all answer with.
+---
+--- Written out rather than assembled from the specs above: `std.argparse.usage` describes
+--- one command at a time, and what a person typing `cardbox` with no arguments wants is the
+--- shape of all nineteen at once, grouped by what they are for.
 function cli.usage(): string
    return USAGE
 end
@@ -925,11 +895,7 @@ function cli.run(s: store, argv: {string}): string, string
       return nil, "no such command: " .. string.format("%q", command) .. ". Try `cardbox help`"
    end
 
-   local rest: {string} = {}
-   for i = 2, #argv do
-      rest[i - 1] = argv[i]
-   end
-   return handler(s, rest)
+   return handler(s, list.drop(argv, 1))
 end
 
 return cli

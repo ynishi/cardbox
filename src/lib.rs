@@ -44,10 +44,15 @@ const CLI: &[u8] = htl::include_tl_bytes!("src/cardbox/cli.tl");
 /// `require("cardbox.cli")`.
 pub fn preload(h: &Htl, root: &Path) -> anyhow::Result<()> {
     Store::open(root)?.htl_preload(h)?;
-    // `std.*`: mlua-batteries, which htl assembles under that name. `std.json` is the one
-    // this project reaches for, and it is the same crate `store::json` converts with — so a
-    // table `std.json.array()` tagged on the Teal side is still a list when the store
-    // weighs it, which a bare `{}` is not.
+    // `std.*`: mlua-batteries, which htl assembles under that name. Four of its modules are
+    // reached for here — `json` for the array tag, `string` for the text helpers, `argparse`
+    // for the command line, `time` for the millisecond clock a prune's cutoff is on — and
+    // this one call registers every module the build carries, so a Teal file that requires
+    // another needs no change on this side.
+    //
+    // `json` is also the crate `store::json` converts with, so a table `std.json.array()`
+    // tagged on the Teal side is still a list when the store weighs it, which a bare `{}`
+    // is not.
     h.install_std()?;
     // Stripped bytecode: small, and with neither line numbers nor a chunk name, so a
     // failure inside these modules reads `?: in function 'cards.open'`. `htl run

@@ -90,14 +90,12 @@ local ID = "^[%w_%-]+$"
 -- The columns `promote` will call "best", and the sentence a refusal names them in. Each
 -- is a column `find` can order by and a field a `CardSummary` carries, which is what lets
 -- the selection be a `cards.find` rather than SQL written here.
-local METRICS: {string:boolean} = {
-   mean_score = true,
-   pass_rate = true,
-   passed = true,
-   n = true,
-}
+-- One array read two ways, as `cardbox.find` reads its columns: the set is what a refusal
+-- is decided by, the sentence is what it names them in.
+local METRIC_NAMES = { "mean_score", "pass_rate", "passed", "n" }
 
-local METRIC_LIST = "mean_score, pass_rate, passed, n"
+local METRICS: {string:boolean} = list.to_set(METRIC_NAMES)
+local METRIC_LIST = table.concat(METRIC_NAMES, ", ")
 local DEFAULT_METRIC = "mean_score"
 
 -- How many candidates a promotion looks at. `find`'s own ceiling is 500; asking for it
@@ -278,17 +276,16 @@ function aliases.alias_history(s: store, name: string): {aliases.Event}, string
    if rows == nil then
       return nil, err
    end
-   local out: {aliases.Event} = {}
-   for i = 1, #rows do
-      local row = rows[i] as {string:any}
-      out[i] = {
+   local out = list.map(rows, function(r: any): aliases.Event
+      local row = r as {string:any}
+      return {
          seq = row.seq as integer,
          kind = row.kind as string,
          card_id = row.card_id as string,
          epoch_ms = row.epoch_ms as integer,
          note = row.note as string,
       }
-   end
+   end)
    if #out == 0 then
       return json.array()
    end
@@ -311,24 +308,25 @@ function aliases.pick_best(candidates: {reads.CardSummary}, metric: string, min_
       return nil
    end
    local floor = min_n or 0
-   local best: reads.CardSummary = nil
 
-   for i = 1, #candidates do
-      local card = candidates[i]
-      local value = metric_of(card, metric)
-      local n = card.n or 0
-      if value ~= nil and n >= floor then
-         if best == nil then
-            best = card
-         else
-            local top = metric_of(best, metric)
-            if value > top or (value == top and (card.opened_ms or 0) > (best.opened_ms or 0)) then
-               best = card
-            end
-         end
+   -- The two halves of the rule, each said once. `filter` drops everyone who does not
+   -- qualify — no metric recorded, or too few cases — and `max` takes the winner out of
+   -- what is left. `max` of nothing is nil, which is exactly the "nobody qualifies"
+   -- answer this promises.
+   local eligible = list.filter(candidates, function(card: reads.CardSummary): boolean
+      return metric_of(card, metric) ~= nil and (card.n or 0) >= floor
+   end)
+
+   -- Highest metric, ties to the card opened last — one `<` rather than `max_by` on the
+   -- metric, because the tiebreak is part of the order and not a second pass over the
+   -- cards that drew.
+   return list.max(eligible, function(a: reads.CardSummary, b: reads.CardSummary): boolean
+      local av, bv = metric_of(a, metric), metric_of(b, metric)
+      if av ~= bv then
+         return av < bv
       end
-   end
-   return best
+      return (a.opened_ms or 0) < (b.opened_ms or 0)
+   end)
 end
 
 --- Put a name on the best card a pkg has closed successfully.

@@ -11,27 +11,39 @@
 
 local t = require("htl.test")
 local cli = require("cardbox.cli")
+local argparse = require("std.argparse")
 
-local function spec(keys: {string:boolean}, flags: {string:boolean}): cli.Spec
-   return { keys = keys, flags = flags }
-end
-
-local OPEN = spec({ pkg = true, parent = true }, { ["dry-run"] = true, json = true })
+-- A stand-in for a real command's spec, carrying one of each shape the commands use: a
+-- single-valued key, a repeatable one, a whole number, a flag, and the three positionals
+-- `alias set <name> <id>` has after its own word.
+--
+-- The flag is declared `dry_run` and typed `--dry-run` throughout, because that mapping is
+-- what `--created-by`, `--pkg-like` and `--older-than-ms` all lean on.
+local OPEN: argparse.Spec = {
+   name = "cardbox test",
+   flags = {
+      pkg = { type = "string" },
+      parent = { type = "string", multiple = true },
+      limit = { type = "integer" },
+      dry_run = { type = "boolean" },
+      json = { type = "boolean" },
+   },
+   positionals = { { name = "what" }, { name = "name" }, { name = "id" } },
+}
 
 t.describe("cli.parse", function()
-   t.it("keeps positionals in the order they were given", function()
+   t.it("gives each positional the name its spec declared, in order", function()
       local args, err = cli.parse({ "set", "champion", "cot_1" }, OPEN)
       t.expect(err):to_be_nil()
-      t.expect(#args.positional):to_equal(3)
-      t.expect(args.positional[1]):to_equal("set")
-      t.expect(args.positional[2]):to_equal("champion")
-      t.expect(args.positional[3]):to_equal("cot_1")
+      t.expect(cli.arg(args, "what")):to_equal("set")
+      t.expect(cli.arg(args, "name")):to_equal("champion")
+      t.expect(cli.arg(args, "id")):to_equal("cot_1")
    end)
 
    t.it("takes a key and its value", function()
       local args = cli.parse({ "--pkg", "cot" }, OPEN)
       t.expect(cli.value(args, "pkg")):to_equal("cot")
-      t.expect(#args.positional):to_equal(0)
+      t.expect(cli.arg(args, "what")):to_be_nil()
    end)
 
    t.it("takes --key=value as the same thing", function()
@@ -52,42 +64,65 @@ t.describe("cli.parse", function()
    t.it("answers nil for a key that was never given", function()
       local args = cli.parse({ "--pkg", "cot" }, OPEN)
       t.expect(cli.value(args, "parent")):to_be_nil()
+      -- nil rather than the empty list an absent repeatable option collects into, because
+      -- "not given" and "given nothing" are different specs downstream
       t.expect(cli.list(args, "parent")):to_be_nil()
    end)
 
-   t.it("takes a flag without a value, and leaves the rest alone", function()
+   t.it("takes a flag by its dashed spelling, and leaves the rest alone", function()
       local args = cli.parse({ "--dry-run", "x" }, OPEN)
-      t.expect(args.flags["dry-run"]):to_equal(true)
-      t.expect(args.positional[1]):to_equal("x")
+      t.expect(cli.flag(args, "dry_run")):to_equal(true)
+      t.expect(cli.arg(args, "what")):to_equal("x")
    end)
 
-   t.it("refuses a value on a flag", function()
-      local args, err = cli.parse({ "--dry-run=yes" }, OPEN)
+   -- A flag reads a value rather than refusing one, so `--dry-run=false` is how a flag is
+   -- turned back off. What is refused is a value that is neither.
+   t.it("takes true or false on a flag, and refuses anything else", function()
+      local off = cli.parse({ "--dry-run=false" }, OPEN)
+      t.expect(cli.flag(off, "dry_run")):to_equal(false)
+
+      local args, err = cli.parse({ "--dry-run=yesplease" }, OPEN)
       t.expect(args):to_be_nil()
       t.expect(err):to_contain("--dry-run")
-      t.expect(err):to_contain("takes no value")
+      t.expect(err):to_contain("true or false")
    end)
 
    t.it("refuses an option nobody declared, by name", function()
       local args, err = cli.parse({ "--scenarion", "arith" }, OPEN)
       t.expect(args):to_be_nil()
-      t.expect(err):to_contain("no such option: --scenarion")
+      t.expect(err):to_contain("unknown option --scenarion")
    end)
 
    t.it("refuses a key with nothing after it", function()
       local args, err = cli.parse({ "--pkg" }, OPEN)
       t.expect(args):to_be_nil()
-      t.expect(err):to_contain("--pkg needs a value")
+      t.expect(err):to_contain("--pkg expects a value")
+   end)
+
+   -- An argument past the last declared positional is a mistake rather than something
+   -- quietly kept: `cardbox get a b` meant one of the two and would have got `a`.
+   t.it("refuses an argument the spec has no positional for", function()
+      local args, err = cli.parse({ "a", "b", "c", "d" }, OPEN)
+      t.expect(args):to_be_nil()
+      t.expect(err):to_contain("unexpected argument")
    end)
 
    t.it("reads a whole number, and refuses one that is not", function()
-      local args = cli.parse({ "--pkg", "12" }, OPEN)
-      t.expect((cli.integer(args, "pkg"))):to_equal(12)
+      local args = cli.parse({ "--limit", "12" }, OPEN)
+      t.expect(cli.integer(args, "limit")):to_equal(12)
 
-      local other = cli.parse({ "--pkg", "1.5" }, OPEN)
-      local n, err = cli.integer(other, "pkg")
-      t.expect(n):to_be_nil()
-      t.expect(err):to_contain("whole number")
+      -- the refusal is the parse's now, not a second reading of a value already taken
+      local other, err = cli.parse({ "--limit", "1.5" }, OPEN)
+      t.expect(other):to_be_nil()
+      t.expect(err):to_contain("--limit")
+      t.expect(err):to_contain("integer")
+   end)
+
+   -- The message is the library's, with its own name taken off the front: whoever mistyped
+   -- an option is not told which parser read it.
+   t.it("names no library in what it refuses with", function()
+      local _, err = cli.parse({ "--scenarion", "arith" }, OPEN)
+      t.expect(err):to_not_contain("argparse")
    end)
 end)
 
