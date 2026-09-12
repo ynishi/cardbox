@@ -155,6 +155,7 @@ dependencies = [
  "eventsdb",
  "hex",
  "htl",
+ "mlua-batteries",
  "serde_json",
  "sha2",
  "tempfile",
@@ -474,8 +475,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "htl"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e27c8ee32d0c88d1b5f89bb8ca48549ec09c06313f4f7f21061a201d6cf4b3c"
+source = "git+https://github.com/ynishi/htl?branch=main#9041ad32719853131e4d04ece4ed361166501bd6"
 dependencies = [
  "htl-core",
  "htl-macros",
@@ -484,12 +484,12 @@ dependencies = [
 [[package]]
 name = "htl-core"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ad804d4d62bb49c320f701fecc88b7484ffa9fb7cab62d09e39e10db9c7d26b"
+source = "git+https://github.com/ynishi/htl?branch=main#9041ad32719853131e4d04ece4ed361166501bd6"
 dependencies = [
  "anyhow",
  "blake3",
  "mlua",
+ "mlua-batteries",
  "mlua-pkg",
  "semver",
  "serde",
@@ -503,8 +503,7 @@ dependencies = [
 [[package]]
 name = "htl-macros"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a634a948df68c4aa339a670db2ad0bb78bdc53abd2a17f60ad27b27e0fbbb4d7"
+source = "git+https://github.com/ynishi/htl?branch=main#9041ad32719853131e4d04ece4ed361166501bd6"
 dependencies = [
  "htl-core",
  "proc-macro2",
@@ -783,6 +782,16 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde-value",
+]
+
+[[package]]
+name = "mlua-batteries"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d161892a140abc75ca751197f96d9066e80b2c416a1f18de5d24c34f6b57da6"
+dependencies = [
+ "mlua",
+ "serde_json",
 ]
 
 [[package]]

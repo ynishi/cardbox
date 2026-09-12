@@ -21,6 +21,11 @@ local type store = require("store")
 local cards = require("cardbox.cards")
 local cardbox = require("cardbox")
 local type reads = require("cardbox.find")
+local list = require("htlx.list")
+-- `trim` was written here twice over, once for the argument parser and once for the
+-- JSON-ish value reader below it. It is `std.string`'s now: the same two patterns, in the
+-- host rather than in this file.
+local str = require("std.string")
 
 local record cli
    -- What one command line came to. `positional` in the order it was given, `values` the
@@ -47,24 +52,10 @@ end
 -- and because leaving it out would make `--json` a spelling mistake.
 local JSON_FLAG = "json"
 
-local function set(names: {string}): {string:boolean}
-   local out: {string:boolean} = {}
-   for i = 1, #names do
-      out[names[i]] = true
-   end
-   return out
-end
-
 local function spec(keys: {string}, flags: {string}): cli.Spec
-   local f = set(flags)
+   local f = list.to_set(flags)
    f[JSON_FLAG] = true
-   return { keys = set(keys), flags = f }
-end
-
-local function trim(s: string): string
-   local out = s:gsub("^%s+", "")
-   out = out:gsub("%s+$", "")
-   return out
+   return { keys = list.to_set(keys), flags = f }
 end
 
 --- Split a command line into positionals, `--key value` pairs and flags.
@@ -106,12 +97,12 @@ function cli.parse(argv: {string}, s: cli.Spec): cli.Args, string
                   return nil, "--" .. key .. " needs a value"
                end
             end
-            local list = args.values[key]
-            if list == nil then
-               list = {}
-               args.values[key] = list
+            local values = args.values[key]
+            if values == nil then
+               values = {}
+               args.values[key] = values
             end
-            list[#list + 1] = value
+            values[#values + 1] = value
          else
             return nil, "no such option: --" .. key
          end
@@ -125,11 +116,11 @@ end
 
 --- The last value given for `key`, or nil.
 function cli.value(args: cli.Args, key: string): string
-   local list = args.values[key]
-   if list == nil or #list == 0 then
+   local values = args.values[key]
+   if values == nil or #values == 0 then
       return nil
    end
-   return list[#list]
+   return values[#values]
 end
 
 --- Every value given for `key`, in order, or nil when it was never given. Nil rather than
@@ -189,7 +180,7 @@ end
 -- parser that took objects would accept shapes no column can hold. Answers `value, err`,
 -- and `false` is a value, so a caller checks `err` rather than the value.
 local function scalar(text: string): any, string
-   local s = trim(text)
+   local s = str.trim(text)
    if s == "" then
       return nil, "a clause needs a value after the operator"
    end
@@ -215,11 +206,11 @@ end
 -- `[a, b, c]` as a list of scalars. A comma inside quotes does not separate, which is the
 -- whole reason this is a scan rather than a `gmatch`.
 local function array(text: string): {any}, string
-   local s = trim(text)
+   local s = str.trim(text)
    if s:sub(#s) ~= "]" then
       return nil, "an array value is not closed: " .. s
    end
-   local body = trim(s:sub(2, #s - 1))
+   local body = str.trim(s:sub(2, #s - 1))
    if body == "" then
       return nil, 'in takes a non-empty array of values, got "[]"'
    end
@@ -271,7 +262,7 @@ function cli.parse_where(text: string): reads.Clause, string
       return nil, '--where takes "column op value", got ' .. string.format("%q", text)
    end
 
-   local raw = trim(rest as string)
+   local raw = str.trim(rest as string)
    local value: any
    local err: string
    if raw:sub(1, 1) == "[" then
@@ -390,7 +381,7 @@ local function cmd_samples(s: store, argv: {string}): string, string
    local n = 0
    for line in (text .. "\n"):gmatch("([^\n]*)\n") do
       n = n + 1
-      local row = trim(line)
+      local row = str.trim(line)
       if row ~= "" then
          local value, jerr = s:json_decode(row)
          if jerr ~= nil then

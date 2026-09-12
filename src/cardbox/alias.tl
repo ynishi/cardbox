@@ -19,6 +19,10 @@
 
 local type store = require("store")
 local reads = require("cardbox.find")
+local list = require("htlx.list")
+-- For `array()` alone, for the reason `cardbox.find` requires it: a list of no bindings is
+-- still a list, and an untagged empty table encodes as `{}`.
+local json = require("std.json")
 
 local record aliases
    -- One current binding, as `alias_list` hands it back.
@@ -142,16 +146,18 @@ local function metric_of(card: reads.CardSummary, metric: string): number
 end
 
 local function entries(rows: {any}): {aliases.Entry}
-   local out: {aliases.Entry} = {}
-   for i = 1, #rows do
-      local row = rows[i] as {string:any}
-      out[i] = {
+   local out = list.map(rows, function(r: any): aliases.Entry
+      local row = r as {string:any}
+      return {
          name = row.name as string,
          card_id = row.card_id as string,
          pkg = row.pkg as string,
          bound_ms = row.bound_ms as integer,
          note = row.note as string,
       }
+   end)
+   if #out == 0 then
+      return json.array()
    end
    return out
 end
@@ -282,6 +288,9 @@ function aliases.alias_history(s: store, name: string): {aliases.Event}, string
          epoch_ms = row.epoch_ms as integer,
          note = row.note as string,
       }
+   end
+   if #out == 0 then
+      return json.array()
    end
    return out
 end

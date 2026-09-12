@@ -5,4 +5,4 @@ version = "0.1.0"
 entry = "src/cardbox"
 
 [deps]
-# lshape = { git = "https://github.com/ynishi/lshape", tag = "v0.1" }
+htlx = { git = "https://github.com/ynishi/htl-x", tag = "v0.1.0" }

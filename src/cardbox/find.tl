@@ -19,6 +19,10 @@
 -- pinned by `htl test` with no store in the room.
 
 local type store = require("store")
+local list = require("htlx.list")
+-- For `array()` alone: a list this module found nothing for is still a list, and an
+-- untagged empty table is `{}` to every JSON reader. See `empty` below.
+local json = require("std.json")
 
 local record find
    -- What a card looks like in a list. The ten columns a reader scans before deciding
@@ -194,12 +198,24 @@ local function row_summary(row: {string:any}): find.CardSummary
    }
 end
 
-local function summaries(rows: {any}): {find.CardSummary}
-   local out: {find.CardSummary} = {}
-   for i = 1, #rows do
-      out[i] = row_summary(rows[i] as {string:any})
+--- `t`, or a list that reads as one when it is empty.
+---
+--- Lua has one table for `{}` and `[]`, and the host has to choose when it sees an empty
+--- one; it chooses the object, which is right for a record with every field cleared and
+--- wrong for a query that matched nothing. `json.array()` is the tag that settles it, and
+--- every function below that answers with a list hands its result through here — the shape
+--- of an answer should not depend on how many rows there were.
+local function as_list<T>(t: {T}): {T}
+   if #t == 0 then
+      return json.array()
    end
-   return out
+   return t
+end
+
+local function summaries(rows: {any}): {find.CardSummary}
+   return as_list(list.map(rows, function(r: any): find.CardSummary
+      return row_summary(r as {string:any})
+   end))
 end
 
 -- `LIMIT` and `OFFSET` are written into the text rather than bound, and that is not an
@@ -385,11 +401,11 @@ local function walk(s: store, start: string, sql: string, depth: integer): {find
          end
       end
       if #next_frontier == 0 then
-         return out
+         return as_list(out)
       end
       frontier = next_frontier
    end
-   return out
+   return as_list(out)
 end
 
 local function neighbours(s: store, sql: string, id: string): {string}, string
@@ -402,7 +418,7 @@ local function neighbours(s: store, sql: string, id: string): {string}, string
       local row = rows[i] as {string:any}
       out[i] = row.other as string
    end
-   return out
+   return as_list(out)
 end
 
 --- Where a card came from and what came from it.
