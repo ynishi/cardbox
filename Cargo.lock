@@ -475,7 +475,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "htl"
 version = "0.4.0"
-source = "git+https://github.com/ynishi/htl?branch=main#9041ad32719853131e4d04ece4ed361166501bd6"
+source = "git+https://github.com/ynishi/htl?branch=main#c87939a17150d390f082250161fddc49fe5c2b3d"
 dependencies = [
  "htl-core",
  "htl-macros",
@@ -484,7 +484,7 @@ dependencies = [
 [[package]]
 name = "htl-core"
 version = "0.4.0"
-source = "git+https://github.com/ynishi/htl?branch=main#9041ad32719853131e4d04ece4ed361166501bd6"
+source = "git+https://github.com/ynishi/htl?branch=main#c87939a17150d390f082250161fddc49fe5c2b3d"
 dependencies = [
  "anyhow",
  "blake3",
@@ -503,7 +503,7 @@ dependencies = [
 [[package]]
 name = "htl-macros"
 version = "0.4.0"
-source = "git+https://github.com/ynishi/htl?branch=main#9041ad32719853131e4d04ece4ed361166501bd6"
+source = "git+https://github.com/ynishi/htl?branch=main#c87939a17150d390f082250161fddc49fe5c2b3d"
 dependencies = [
  "htl-core",
  "proc-macro2",
