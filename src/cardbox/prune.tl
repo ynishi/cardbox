@@ -269,8 +269,8 @@ local function candidates(s: store, spec: prune.PruneSpec): {reads.CardSummary},
       clauses[#clauses + 1] = { column = "pkg", op = "like", value = spec.pkg_like }
    end
    if spec.older_than_ms ~= nil then
-   -- `std.time.millis()` is the clock `opened_ms` is on. A cutoff computed here rather
-   -- than in SQL is what keeps the whole selection one `find` with bound parameters.
+      -- `std.time.millis()` is the clock `opened_ms` is on. A cutoff computed here rather
+      -- than in SQL is what keeps the whole selection one `find` with bound parameters.
       local cutoff = time.millis() - math.floor(spec.older_than_ms as number)
       clauses[#clauses + 1] = { column = "opened_ms", op = "<", value = cutoff }
    end

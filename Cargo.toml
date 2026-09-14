@@ -5,9 +5,9 @@ edition = "2024"
 # authors / license / repository: fill in yourself
 
 [dependencies]
-# main rather than 0.4.0: an installed dependency is read at its entry (ynishi/htl#204),
-# which is what lets the macros see `htlx.*`. Back to the release once one ships.
-htl = { git = "https://github.com/ynishi/htl", branch = "main" }
+# 0.5.1 carries what main was pinned for: an installed dependency read at its entry
+# (ynishi/htl#204), so the macros see `htlx.*`, and `Htl::install_std`.
+htl = "0.5.1"
 anyhow = "1"
 eventsdb = { version = "0.5.0", features = ["sqlite"] }
 # One current-thread runtime, owned by the store, which `block_on`s every call on it.
