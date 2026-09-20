@@ -1,5 +1,9 @@
 # cardbox
 
+```sh
+cargo install runcard     # the crate is `runcard` on crates.io; the binary is `cardbox`
+```
+
 A card is one run's immutable record — what it came from, what it cost, the samples it
 produced, how it scored, the checkpoint it left. `cardbox` keeps them in an append-only
 log so that a card exists from the moment a run starts rather than only when one

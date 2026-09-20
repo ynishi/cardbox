@@ -1,5 +1,8 @@
 [package]
-name = "cardbox"
+# `runcard` on crates.io — `cardbox` there is somebody else's placeholder — and `cardbox`
+# everywhere else: the binary, the repo, the Teal module, the CLI. `cargo install runcard`
+# installs `cardbox`.
+name = "runcard"
 version = "0.1.0"
 edition = "2024"
 authors = ["Yutaka Nishimura"]
@@ -29,6 +32,13 @@ exclude = [
     "justfile",
     "workspace/**",
 ]
+
+[lib]
+name = "cardbox"
+
+[[bin]]
+name = "cardbox"
+path = "src/main.rs"
 
 [dependencies]
 # 0.5.1 carries what main was pinned for: an installed dependency read at its entry
