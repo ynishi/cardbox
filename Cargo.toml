@@ -21,6 +21,8 @@ exclude = [
     "patches/htlx/htl.toml",
     "patches/htlx/mlua-pkg.toml",
     "patches/htlx/README.md",
+    "patches/htlx/.github/**",
+    "patches/htlx/.gitignore",
     "patches/htlx/tests/**",
     "e2e/**",
     "tools/**",
