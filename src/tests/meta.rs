@@ -20,14 +20,23 @@ fn params_and_identity_are_written_at_the_open_and_read_back_whole() -> anyhow::
         local card, err = cards.open(store, {
            pkg = 'cot', scenario = 'arith', source = 'eval', created_by = 'x', id = 'p1',
            params = { temperature = 0.2, variant = 'b', thresholds = { 1, 2 } },
-           model = 'claude-opus-4-6', trace_id = 'tr-9', task_dir = '/tmp/t9',
+           model = 'claude-opus-4-6', trace_id = 'tr-9', work_url = 'file:///tmp/t9',
         })
         assert(err == nil, tostring(err))
+
+        local bare, berr = cards.open(store, {
+           pkg = 'cot', scenario = 'arith', source = 'eval', created_by = 'x', work_url = '/tmp/t9',
+        })
+        assert(bare == nil and berr:find('scheme'), 'a bare path is refused: ' .. tostring(berr))
+        local rel, relerr = cards.open(store, {
+           pkg = 'cot', scenario = 'arith', source = 'eval', created_by = 'x', work_url = 'workspace/tasks/x',
+        })
+        assert(rel == nil and relerr:find('scheme'), 'a relative path too: ' .. tostring(relerr))
         assert(type(card.fingerprint) == 'string' and #card.fingerprint == 16, tostring(card.fingerprint))
 
         local view = cards.get(store, 'p1')
         assert(view.model == 'claude-opus-4-6', tostring(view.model))
-        assert(view.trace_id == 'tr-9' and view.task_dir == '/tmp/t9', 'identity read back')
+        assert(view.trace_id == 'tr-9' and view.work_url == 'file:///tmp/t9', 'identity read back')
         assert(view.fingerprint == card.fingerprint, 'the fingerprint is on the card')
         assert(view.params.temperature == 0.2 and view.params.variant == 'b', 'params read back')
         assert(view.params.thresholds[2] == 2, 'nested params read back')

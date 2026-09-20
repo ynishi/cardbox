@@ -40,7 +40,7 @@ anyway.
 `get` hands back unchanged, and flattened into `mean_score` / `n` / `pass_rate` / `passed` /
 `elapsed_ms` / `llm_calls`, which is what a `find` compares without `json_extract` on every
 row. An open's `params` are kept the same way (`params_json`, and `model` / `trace_id` /
-`task_dir` / `fingerprint` as columns), and `cb_tags` holds the current value of every tag.
+`work_url` / `fingerprint` as columns), and `cb_tags` holds the current value of every tag.
 `cb_blobs.refs` counts what points at each blob, and is what `store:blob_gc()` reads.
 
 ## Params, assessments and tags
@@ -51,10 +51,14 @@ tags and W&B's config / summary / tags both landed on.
 
 **`params`** is what the run was given: the knobs, as one table of whatever shape the pkg
 keeps them in, written by `open` and immutable from there. With it go the run's identity
-— `model`, `trace_id`, `task_dir`, scalars in the event's `meta` and columns in `cb_cards`
+— `model`, `trace_id`, `work_url`, scalars in the event's `meta` and columns in `cb_cards`
 — and a `fingerprint`, the first 16 hex of the SHA-256 of the params' canonical JSON, so
 "the runs given these knobs" is one equality. The fingerprint is of the params alone; a
-reader who means "same knobs, same model" has both columns.
+reader who means "same knobs, same model" has both columns. `work_url` is where the run
+worked, as a URL with its scheme (`file:///Users/me/tasks/x`, `https://…`, `s3://…`); a
+bare path is refused rather than given a `file://`, because the paths that arrive bare are
+the relative ones and only the writer knows what they are relative to. Where the *code*
+came from is a tag when it is wanted (`vcs.repo`, `vcs.commit`), not this field.
 
 **Assessments** are `eval_recorded` events, and each says who made it: `source` is `code`
 (the run's own evaluator, the default), `llm_judge` or `human`. They are the one thing
@@ -210,7 +214,7 @@ adapter later is another client of the same API rather than a second implementat
 
 | command | what it does |
 |---|---|
-| `open --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...] [--note N] [--id ID] [--params JSON] [--model M] [--trace-id T] [--task-dir D]` | open a card at the start of a run; `--created-by` defaults to `cardbox <version>` |
+| `open --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...] [--note N] [--id ID] [--params JSON] [--model M] [--trace-id T] [--work-url U]` | open a card at the start of a run; `--created-by` defaults to `cardbox <version>` |
 | `samples <id> [--file rows.jsonl]` | one JSON object per line, from the file or from stdin |
 | `eval <id> --file eval.json [--source code\|llm_judge\|human]` | record one assessment; open or closed |
 | `checkpoint <id> --file weights.bin --format safetensors [--note N]` | save a checkpoint as a blob |

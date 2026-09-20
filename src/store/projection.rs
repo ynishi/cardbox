@@ -141,7 +141,7 @@ impl CardsProjection {
 ///
 /// `params_json` is the same arrangement for what a run was *given*: the JSON as the open
 /// wrote it, for `get`, and beside it the four scalars the open put in its `meta` —
-/// `model`, `trace_id`, `task_dir`, `fingerprint` — as columns, because those are what a
+/// `model`, `trace_id`, `work_url`, `fingerprint` — as columns, because those are what a
 /// reader asks by ("every card of this model", "the run that trace belongs to") and what a
 /// fingerprint is for is being compared. Anything else inside `params` is reached with
 /// `json_extract`, which is what `find`'s `params.<path>` clauses expand to; a key that
@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS cb_cards (
     note             TEXT,
     model            TEXT,
     trace_id         TEXT,
-    task_dir         TEXT,
+    work_url         TEXT,
     fingerprint      TEXT,
     params_json      TEXT,
     state            TEXT NOT NULL,
@@ -437,7 +437,7 @@ fn opened(
     let params = data.and_then(|d| d.get("params"));
     tx.execute(
         "INSERT INTO cb_cards (id, pkg, scenario, source, created_by, note,
-                               model, trace_id, task_dir, fingerprint, params_json,
+                               model, trace_id, work_url, fingerprint, params_json,
                                state, opened_ms, opened_position)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'open', ?12, ?13)
          ON CONFLICT (id) DO NOTHING",
@@ -450,7 +450,7 @@ fn opened(
             text(data, "note"),
             text(meta, "model"),
             text(meta, "trace_id"),
-            text(meta, "task_dir"),
+            text(meta, "work_url"),
             text(meta, "fingerprint"),
             params.map(Json::to_string),
             epoch_ms,

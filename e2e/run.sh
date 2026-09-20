@@ -68,7 +68,8 @@ ok "version $(printf '%s' "$VERSION" | jq -r .cardbox), root $ROOT"
 # ------------------------------------------------------------------ two cards
 
 PARENT_JSON="$($CARDBOX open --pkg demo --scenario arith --source e2e --note 'the first run' \
-   --params '{"temperature": 0.2, "variant": "b"}' --model demo-model --trace-id tr-e2e)"
+   --params '{"temperature": 0.2, "variant": "b"}' --model demo-model --trace-id tr-e2e \
+   --work-url "file://$FIXTURES")"
 assert "the open minted a fingerprint" "$PARENT_JSON" '(.fingerprint | length) == 16'
 assert "open the parent" "$PARENT_JSON" '.state == "open" and .pkg == "demo"'
 PARENT="$(printf '%s' "$PARENT_JSON" | jq -r .id)"

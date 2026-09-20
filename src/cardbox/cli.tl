@@ -323,7 +323,7 @@ local OPEN = spec("open", {
    params = TEXT,
    model = TEXT,
    trace_id = TEXT,
-   task_dir = TEXT,
+   work_url = TEXT,
 })
 
 local function cmd_open(s: store, argv: {string}): string, string
@@ -358,7 +358,7 @@ local function cmd_open(s: store, argv: {string}): string, string
       params = params,
       model = cli.value(args, "model"),
       trace_id = cli.value(args, "trace_id"),
-      task_dir = cli.value(args, "task_dir"),
+      work_url = cli.value(args, "work_url"),
    })
    if card == nil then
       return nil, err
@@ -883,7 +883,7 @@ local USAGE = table.concat({
    "A card's life:",
    "  open        --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...]",
    "              [--note N] [--id ID] [--params JSON] [--model M] [--trace-id T]",
-   "              [--task-dir D]",
+   "              [--work-url file:///abs/dir | https://...]",
    "  samples     <id> [--file rows.jsonl]    one JSON object per line; stdin without --file",
    "  eval        <id> --file eval.json [--source code|llm_judge|human]",
    "  checkpoint  <id> --file weights.bin --format safetensors [--note N]",

@@ -60,8 +60,13 @@ local record cards
    -- immutable from the open on. `params` is the run's input — the knobs that were set,
    -- as one table of whatever shape the pkg keeps them in — and its fingerprint is minted
    -- from it so that two runs given the same knobs can be told to be. `model`, `trace_id`
-   -- and `task_dir` are the run's identity: which model answered, which trace it is a
-   -- part of, where it ran. They are scalars because they are what a reader asks *by*.
+   -- and `work_url` are the run's identity: which model answered, which trace it is a
+   -- part of, where it worked. They are scalars because they are what a reader asks *by*.
+   --
+   -- `work_url` is a URL and not a path: `file:///Users/me/tasks/x`, `https://…`, `s3://…`.
+   -- A bare path is refused rather than given a `file://`, because the paths that arrive
+   -- bare are the relative ones (`workspace/tasks/x`), and only the writer knows what
+   -- they are relative to. Making the writer say so is what the scheme is for.
    record OpenSpec
       pkg: string
       scenario: string
@@ -73,7 +78,7 @@ local record cards
       params: any
       model: string
       trace_id: string
-      task_dir: string
+      work_url: string
    end
 
    -- What `open` hands back: enough to write the rest of the card without reading it.
@@ -141,7 +146,7 @@ local record cards
       note: string
       model: string
       trace_id: string
-      task_dir: string
+      work_url: string
       fingerprint: string
       params: any
       state: string
@@ -181,6 +186,11 @@ local TAG_KEY = "^[%w_%-]+%.?[%w_%-%.]*$"
 -- `human` somebody who looked.
 local SOURCES: {string:boolean} = { code = true, llm_judge = true, human = true }
 local SOURCE_LIST = "code, llm_judge, human"
+
+-- The front of a URL, RFC 3986 §3.1: a letter, then letters, digits, `+`, `-` and `.`,
+-- then the colon. That is the whole of the check — what follows the scheme is the
+-- scheme's business — and it is exactly the check a bare path fails.
+local URL_SCHEME = "^[A-Za-z][A-Za-z0-9+%-%.]*:"
 
 -- One seed per module load. `os.time()` alone repeats for every card minted within the
 -- same second, which is exactly the window two cards of one run share; `os.clock()` is
@@ -319,9 +329,13 @@ function cards.open(s: store, spec: cards.OpenSpec): cards.Card, string
    if terr ~= nil then
       return nil, terr
    end
-   local task_dir, derr = optional_string(spec.task_dir, "task_dir")
+   local work_url, derr = optional_string(spec.work_url, "work_url")
    if derr ~= nil then
       return nil, derr
+   end
+   if work_url ~= nil and work_url:match(URL_SCHEME) == nil then
+      return nil, "work_url is a URL with a scheme (file:///abs/dir, https://..., s3://...), got "
+         .. string.format("%q", work_url)
    end
    local fingerprint: string
    if spec.params ~= nil then
@@ -344,7 +358,7 @@ function cards.open(s: store, spec: cards.OpenSpec): cards.Card, string
       created_by = created_by,
       model = model,
       trace_id = trace_id,
-      task_dir = task_dir,
+      work_url = work_url,
       fingerprint = fingerprint,
    }
    local data = { parents = parents, note = spec.note, params = spec.params }
@@ -669,7 +683,7 @@ function cards.fold(s: store, id: string): cards.CardView, string
             view.created_by = meta.created_by as string
             view.model = meta.model as string
             view.trace_id = meta.trace_id as string
-            view.task_dir = meta.task_dir as string
+            view.work_url = meta.work_url as string
             view.fingerprint = meta.fingerprint as string
          end
          if data ~= nil then
@@ -749,7 +763,7 @@ function cards.get(s: store, id: string): cards.CardView, string
 
    local rows, qerr = s:query(
       "SELECT id, pkg, scenario, source, created_by, note, state, opened_ms, closed_ms, "
-         .. "model, trace_id, task_dir, fingerprint, params_json, "
+         .. "model, trace_id, work_url, fingerprint, params_json, "
          .. "error, stats_json, cost_json, sample_batches, sample_rows, eval_count "
          .. "FROM cb_cards WHERE id = ?",
       { card }
@@ -771,7 +785,7 @@ function cards.get(s: store, id: string): cards.CardView, string
       note = row.note as string,
       model = row.model as string,
       trace_id = row.trace_id as string,
-      task_dir = row.task_dir as string,
+      work_url = row.work_url as string,
       fingerprint = row.fingerprint as string,
       state = row.state as string,
       opened_ms = row.opened_ms as integer,

@@ -112,7 +112,7 @@ local COLUMN_NAMES = {
    "created_by",
    "model",
    "trace_id",
-   "task_dir",
+   "work_url",
    "fingerprint",
    "state",
    "opened_ms",
