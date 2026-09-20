@@ -12,6 +12,7 @@
 mod alias;
 mod cards;
 mod cli;
+mod compat;
 mod meta;
 mod multi;
 mod prune;

@@ -144,6 +144,27 @@ function over summaries, which is how `htl test` argues about the rule with no s
 room. The rest of the reads are `cards.get_by_alias`, `cards.alias_list` and
 `cards.alias_history`, and `cards.get` now lists a card's names.
 
+## alc's card/v0 surface
+
+`src/cardbox/compat.tl` is the seam an alc built on cardbox stands on: what `alc_card_find`
+and `alc_card_samples` took, translated. `compat.find` takes `{ pkg, where, order_by,
+limit, offset }` — the nested-object `where` (`{ model = { id = "m" }, stats = { pass_rate
+= { gte = 0.5 } } }`), `-path` for descending — and answers v0 summary rows (`card_id`,
+`pkg`, `scenario`, `model`, `pass_rate`, …) out of `cards.find`. `compat.translate` is the
+pure half, and says what maps where: `model.id` is `model`, `metadata.trace_id` is
+`trace_id`, `metadata.group` is `tags.group`, a section a pkg added on its own is
+`params.<section>`, `stats.` / `params.` / `tags.` pass through. What `cards.find` cannot
+answer is refused by name rather than half-answered — `_or`, `_not`, `nin`, `exists`, and
+`created_at`, which is a string in v0 and `opened_ms` here.
+
+`compat.samples` is the row side: `cards.samples` reads a card's rows back out of the
+inline batches and the blobs, and the same DSL — all of it this time, `_or` and `exists`
+included, because it runs over decoded rows — keeps the ones a `where` matches, with
+`offset` and `limit` applied after. The CLI has both as `compat find` and `rows`.
+
+`tools/import_v0.py` is the other half of the seam: `~/.algocline/cards` into a cardbox
+root, with the mapping the translation assumes.
+
 ## Prune and export
 
 A card is an immutable record, so removing one is the only operation here that can make a
@@ -223,6 +244,8 @@ adapter later is another client of the same API rather than a second implementat
 | `get <id>` | the card as it reads now |
 | `list [--pkg P] [--state S] [--limit N] [--offset N]` | the last cards, newest first |
 | `find --where 'col op value' [--where ...] [--order-by col] [--asc] [--limit N] [--offset N]` | one clause per `--where`, ANDed; `col` is a column, `params.<path>`, `stats.<path>` or `tags.<key>` |
+| `rows <id> [--where JSON] [--limit N] [--offset N]` | the sample rows, those a v0-style `where` keeps, paged after the filter |
+| `compat find [--pkg P] [--where JSON] [--order-by=[-]path] [--limit N] [--offset N]` | `alc_card_find`'s arguments and answer, over cardbox; a descending key starts with `-`, so it is written `--order-by=-stats.ev` |
 | `lineage <id> [--depth N]` | parents, children, and the walk either way |
 | `alias set <name> <id> [--note N]` / `release <name>` / `get <name>` / `list [--pkg P] [--card ID]` / `history <name>` | the names over the cards |
 | `promote --alias A --pkg P [--scenario S] [--metric M] [--min-n N] [--note N]` | put a name on the best closed card of a pkg |

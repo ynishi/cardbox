@@ -125,8 +125,15 @@ def import_card(fp):
     if rest:
         params["model"] = rest
 
+    # metadata.prior_card_id is v0's lineage pointer: the parent. cardbox takes the id on
+    # trust (the parent may be a card that was never migrated), so nothing is checked here.
+    prior = md.pop("prior_card_id", None)
+    parent_arg = ["--parent", prior] if isinstance(prior, str) and prior else []
+    if parent_arg:
+        counts["parents"] += 1
+
     args = ["open", "--pkg", pkg, "--scenario", scn, "--source", "alc-v0",
-            "--created-by", d["created_by"], "--id", cid] + model_arg
+            "--created-by", d["created_by"], "--id", cid] + model_arg + parent_arg
     if params:
         args += ["--params", json.dumps(params, default=str)]
     body = d.get("description", {}).get("body")

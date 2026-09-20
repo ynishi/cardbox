@@ -18,6 +18,9 @@ local reads = require("cardbox.find")
 local aliases = require("cardbox.alias")
 local pruning = require("cardbox.prune")
 local list = require("htlx.list")
+-- For `array()` alone: a card with no samples answers a list, and an untagged empty table
+-- would reach a JSON reader as `{}`.
+local json = require("std.json")
 
 local record cards
    -- The read half: declared here, defined in `cardbox.find`. A caller holds one module —
@@ -435,6 +438,70 @@ function cards.append_samples(s: store, id: string, rows: {any}): cards.Appended
    if blob ~= nil then
       out.blob = blob.hash
       out.size = blob.size
+   end
+   return out
+end
+
+--- Every sample row of a card, in the order the batches were appended.
+---
+--- The read that `append_samples` is the write of: an inline batch is decoded out of the
+--- event's `rows`, a batch that went to a blob is fetched and decoded, and the two are
+--- one list. A card with no samples answers an empty list; an id no card is under is
+--- refused, because "nothing was written" and "there is no such card" are different
+--- answers and a reader acting on the first should not be given the second.
+function cards.samples(s: store, id: string): {any}, string
+   local card, err = required_name(id, "id")
+   if card == nil then
+      return nil, err
+   end
+   local batches, qerr = s:query(
+      "SELECT rows_json, blob FROM cb_samples WHERE card_id = ? ORDER BY seq",
+      { card }
+   )
+   if batches == nil then
+      return nil, qerr
+   end
+   if #batches == 0 then
+      local present, perr = s:query("SELECT 1 AS one FROM cb_cards WHERE id = ?", { card })
+      if present == nil then
+         return nil, perr
+      end
+      if #present == 0 then
+         return nil, "no card " .. card
+      end
+      return json.array()
+   end
+
+   local out: {any} = {}
+   for i = 1, #batches do
+      local batch = batches[i] as {string:any}
+      local text: string
+      if batch.rows_json ~= nil then
+         text = batch.rows_json as string
+      elseif batch.blob ~= nil then
+         local bytes, berr = s:blob_get(batch.blob as string)
+         if berr ~= nil then
+            return nil, berr
+         end
+         if bytes == nil then
+            return nil, "card " .. card .. " names a samples blob that is not in the store: "
+               .. (batch.blob as string)
+         end
+         text = bytes
+      end
+      if text ~= nil then
+         local rows, jerr = s:json_decode(text)
+         if rows == nil then
+            return nil, jerr
+         end
+         local decoded = rows as {any}
+         for j = 1, #decoded do
+            out[#out + 1] = decoded[j]
+         end
+      end
+   end
+   if #out == 0 then
+      return json.array()
    end
    return out
 end

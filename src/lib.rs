@@ -33,6 +33,7 @@ const FIND: &[u8] = htl::include_tl_bytes!("src/cardbox/find.tl");
 const ALIAS: &[u8] = htl::include_tl_bytes!("src/cardbox/alias.tl");
 const PRUNE: &[u8] = htl::include_tl_bytes!("src/cardbox/prune.tl");
 const CARDS: &[u8] = htl::include_tl_bytes!("src/cardbox/cards.tl");
+const COMPAT: &[u8] = htl::include_tl_bytes!("src/cardbox/compat.tl");
 const MODULE: &[u8] = htl::include_tl_bytes!("src/cardbox/init.tl");
 const CLI: &[u8] = htl::include_tl_bytes!("src/cardbox/cli.tl");
 
@@ -66,6 +67,7 @@ pub fn preload(h: &Htl, root: &Path) -> anyhow::Result<()> {
     h.preload_bytes("cardbox.alias", ALIAS)?;
     h.preload_bytes("cardbox.prune", PRUNE)?;
     h.preload_bytes("cardbox.cards", CARDS)?;
+    h.preload_bytes("cardbox.compat", COMPAT)?;
     h.preload_bytes("cardbox", MODULE)?;
     // Last, because it is the only one that requires the whole of the module above it. It
     // is registered by `preload` rather than by the binary so that a test, or another

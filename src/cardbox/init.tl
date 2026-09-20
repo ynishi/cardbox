@@ -11,6 +11,7 @@
 
 local type Aliases = require("cardbox.alias")
 local type Cards = require("cardbox.cards")
+local type Compat = require("cardbox.compat")
 local type Find = require("cardbox.find")
 local type Prune = require("cardbox.prune")
 
@@ -19,12 +20,16 @@ local record cardbox
    find: Find
    alias: Aliases
    prune: Prune
+   -- alc's card/v0 surface (`alc_card_find` / `alc_card_samples` arguments and rows), as
+   -- a client of `cards`: the seam an alc built on cardbox stands on.
+   compat: Compat
 end
 
 cardbox.cards = require("cardbox.cards")
 cardbox.find = require("cardbox.find")
 cardbox.alias = require("cardbox.alias")
 cardbox.prune = require("cardbox.prune")
+cardbox.compat = require("cardbox.compat")
 
 function cardbox.version(): string
    return "0.1.0"

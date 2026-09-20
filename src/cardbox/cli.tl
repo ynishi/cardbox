@@ -23,6 +23,7 @@
 
 local type store = require("store")
 local cards = require("cardbox.cards")
+local compat = require("cardbox.compat")
 local cardbox = require("cardbox")
 local type reads = require("cardbox.find")
 local list = require("htlx.list")
@@ -651,6 +652,82 @@ local function cmd_find(s: store, argv: {string}): string, string
    return encode(s, rows)
 end
 
+-- A `--where` here is JSON and not the `col op value` line `find` takes: it is alc's
+-- nested-object DSL, handed through as it is so that a caller who has one need not
+-- rewrite it. `cardbox.compat` decodes what it means.
+local function where_json(s: store, args: argparse.Result): any, string
+   local text = cli.value(args, "where")
+   if text == nil then
+      return nil
+   end
+   local v, jerr = s:json_decode(text)
+   if jerr ~= nil then
+      return nil, "--where is not JSON: " .. jerr
+   end
+   return v
+end
+
+local ROWS = spec("rows", { where = TEXT, limit = WHOLE, offset = WHOLE }, { { name = "id", required = true } })
+
+local function cmd_rows(s: store, argv: {string}): string, string
+   local args, perr = cli.parse(argv, ROWS)
+   if args == nil then
+      return nil, perr
+   end
+   local where, werr = where_json(s, args)
+   if werr ~= nil then
+      return nil, werr
+   end
+   local rows, err = compat.samples(s, cli.arg(args, "id"), {
+      filter = where,
+      limit = cli.integer(args, "limit"),
+      offset = cli.integer(args, "offset"),
+   })
+   if rows == nil then
+      return nil, err
+   end
+   return encode(s, rows)
+end
+
+local COMPAT_FIND = spec("compat find", {
+   pkg = TEXT,
+   where = TEXT,
+   order_by = TEXT,
+   limit = WHOLE,
+   offset = WHOLE,
+})
+
+-- `compat` is alc's card/v0 surface: `compat find` takes what `alc_card_find` took and
+-- answers what it answered, so an alc built on cardbox is this call and nothing else.
+local function cmd_compat(s: store, argv: {string}): string, string
+   local what = argv[1]
+   local rest = list.drop(argv, 1)
+
+   if what == "find" then
+      local args, perr = cli.parse(rest, COMPAT_FIND)
+      if args == nil then
+         return nil, perr
+      end
+      local where, werr = where_json(s, args)
+      if werr ~= nil then
+         return nil, werr
+      end
+      local rows, err = compat.find(s, {
+         pkg = cli.value(args, "pkg"),
+         filter = where,
+         order_by = cli.value(args, "order_by"),
+         limit = cli.integer(args, "limit"),
+         offset = cli.integer(args, "offset"),
+      })
+      if rows == nil then
+         return nil, err
+      end
+      return encode(s, rows)
+   end
+
+   return nil, "compat takes find, got " .. string.format("%q", tostring(what))
+end
+
 local LINEAGE = spec("lineage", { depth = WHOLE }, { { name = "id", required = true } })
 
 local function cmd_lineage(s: store, argv: {string}): string, string
@@ -899,7 +976,12 @@ local USAGE = table.concat({
    "  find        --where 'col op value' [--where ...] [--order-by col] [--asc]",
    "              [--limit N] [--offset N]",
    "              col is a column, or params.<path>, stats.<path>, tags.<key>",
+   "  rows        <id> [--where JSON] [--limit N] [--offset N]   the sample rows",
    "  lineage     <id> [--depth N]",
+   "",
+   "alc's card/v0 surface:",
+   "  compat find [--pkg P] [--where JSON] [--order-by=[-]path] [--limit N] [--offset N]",
+   "              a descending key starts with -, so it is written --order-by=-stats.ev",
    "",
    "Names:",
    "  alias set <name> <id> [--note N]        alias release <name> [--note N]",
@@ -924,7 +1006,7 @@ local USAGE = table.concat({
 ---
 --- Written out rather than assembled from the specs above: `std.argparse.usage` describes
 --- one command at a time, and what a person typing `cardbox` with no arguments wants is the
---- shape of all twenty at once, grouped by what they are for.
+--- shape of all twenty-two at once, grouped by what they are for.
 function cli.usage(): string
    return USAGE
 end
@@ -939,6 +1021,8 @@ local HANDLERS: {string:Handler} = {
    get = cmd_get,
    list = cmd_list,
    find = cmd_find,
+   rows = cmd_rows,
+   compat = cmd_compat,
    lineage = cmd_lineage,
    alias = cmd_alias,
    promote = cmd_promote,

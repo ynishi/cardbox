@@ -36,6 +36,7 @@ local record find
       id: string
       pkg: string
       scenario: string
+      model: string
       state: string
       opened_ms: integer
       closed_ms: integer
@@ -209,7 +210,7 @@ local MAX_LIMIT = 500
 local DEFAULT_DEPTH = 3
 local MAX_DEPTH = 10
 
-local SUMMARY = "SELECT id, pkg, scenario, state, opened_ms, closed_ms, mean_score, n, "
+local SUMMARY = "SELECT id, pkg, scenario, model, state, opened_ms, closed_ms, mean_score, n, "
    .. "pass_rate, passed FROM cb_cards"
 
 -- The tiebreaker every ordering ends with. `opened_ms` is a millisecond clock and two
@@ -237,6 +238,7 @@ local function row_summary(row: {string:any}): find.CardSummary
       id = row.id as string,
       pkg = row.pkg as string,
       scenario = row.scenario as string,
+      model = row.model as string,
       state = row.state as string,
       opened_ms = row.opened_ms as integer,
       closed_ms = row.closed_ms as integer,

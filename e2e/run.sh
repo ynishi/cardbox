@@ -147,6 +147,16 @@ assert "find by params and by tag" \
 assert "tag unset" "$($CARDBOX tag unset "$PARENT" stage)" '.changed == true'
 ok "closed card: a human eval, a tag set once, found by params.variant and tags.stage, tag unset"
 
+# ------------------------------------------------------------------ alc's surface
+
+assert "rows, filtered by a v0 where and paged" \
+   "$($CARDBOX rows "$PARENT" --where '{"score": {"gte": 1}}' --offset 1 --limit 2)" \
+   'length == 2 and all(.score == 1)'
+assert "compat find with alc's own arguments" \
+   "$($CARDBOX compat find --pkg demo --where '{"model": {"id": "demo-model"}, "stats": {"pass_rate": {"gte": 0.5}}}' --order-by=-stats.pass_rate)" \
+   --arg p "$PARENT" 'length == 1 and .[0].card_id == $p and .[0].model == "demo-model"'
+ok "alc's surface: rows with a row where, compat find with model.id and stats.pass_rate"
+
 # ------------------------------------------------------------------ alias
 
 assert "alias set" "$($CARDBOX alias set best "$PARENT" --note 'the one to beat')" '.changed == true'
