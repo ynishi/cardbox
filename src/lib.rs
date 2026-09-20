@@ -28,7 +28,10 @@ pub use store::{Blob, Recorded, Store};
 // dependency's entry, so it is the same file `htl check` and `htl test` read. The path is
 // machine-local, like `node_modules/` — a fresh clone runs `htl pkg install` before
 // `cargo build`.
-const HTLX_LIST: &[u8] = htl::include_tl_bytes!(".htl/modules/entries/htlx/list.tl");
+// From the project's own copy of the dependency (`htl pkg patch htlx`, `patches/htlx/`),
+// not from `.htl/modules/`: the latter is written by `htl pkg install` and is not in the
+// crate tarball, so a build from crates.io would have nothing to embed.
+const HTLX_LIST: &[u8] = htl::include_tl_bytes!("patches/htlx/src/htlx/list.tl");
 const FIND: &[u8] = htl::include_tl_bytes!("src/cardbox/find.tl");
 const ALIAS: &[u8] = htl::include_tl_bytes!("src/cardbox/alias.tl");
 const PRUNE: &[u8] = htl::include_tl_bytes!("src/cardbox/prune.tl");

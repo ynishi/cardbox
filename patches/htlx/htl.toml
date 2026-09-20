@@ -2,8 +2,8 @@
 # Command-line flags and HTL_LINTS / HTL_LINT override it.
 
 [lint]
-# strict = true   # warnings and lints fail htl check (not htl test); lints fail
-#                   include_tl!; false makes the macro advisory
+strict = true     # warnings and lints fail htl check (not htl test); lints fail
+                  # include_tl!; false makes the macro advisory
 
 # Per rule: htl check --list-lints names every rule with the level it has by
 # default, and the README's "Lints" section says how to change one.
@@ -12,11 +12,7 @@
 indent = 3
 
 [check]
-# Where `require("htlx.*")` resolves from when `.htl/modules/` is not there — which is
-# the case in the crate tarball `cargo publish` verifies and a registry checkout builds
-# from. `patches/htlx` is the project's own copy of the dependency (`htl pkg patch`);
-# with `htl pkg install` run, `.htl/modules/entries/htlx` links to the same files.
-paths = ["patches/htlx/src"]
+# paths = ["mods", "~/.cache/sdk"]   # extra dirs require() resolves from while checking
 # (src/ and types/ are always searched; hand-written .d.tl go under types/)
 
 # Where this project accepts modules written outside it:

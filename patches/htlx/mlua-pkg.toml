@@ -1,0 +1,8 @@
+[package]
+name = "htl-x"
+version = "0.1.0"
+# Consumers `require("htlx.tablex")` / `require("htlx.list")` -> files under this directory.
+# The require root is the consumer's [deps] key, so depend on it as `htlx = { ... }`.
+entry = "src/htlx"
+
+[deps]

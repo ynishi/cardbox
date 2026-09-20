@@ -5,4 +5,4 @@ version = "0.1.0"
 entry = "src/cardbox"
 
 [deps]
-htlx = { git = "https://github.com/ynishi/htl-x", tag = "v0.1.0" }
+htlx = { git = "https://github.com/ynishi/htl-x", tag = "v0.1.0" , patch_dir = "patches/htlx" }

@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: htl check + test + fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # htl from main rather than the 0.4.0 on crates.io: its formatter re-indents the
+      # line after a generic's closing `>` (ynishi/htl#205), which every method of
+      # `htlx.ordered` ends in. The release after 0.4.0 carries the fix; pin it then.
+      - run: cargo install --git https://github.com/ynishi/htl htl-cli --locked
+      - run: htl check .
+      - run: htl test
+      - run: htl fmt --check .

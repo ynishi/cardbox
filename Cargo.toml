@@ -10,6 +10,23 @@ description = "An append-only record of every run: samples, evals, checkpoints, 
 readme = "README.md"
 keywords = ["event-sourcing", "experiment-tracking", "sqlite", "lua", "teal"]
 categories = ["command-line-utilities", "database", "development-tools"]
+# The crate tarball carries the Teal it embeds and the one dependency's source under
+# `patches/htlx/` (resolved through `htl.toml`'s `[check] paths`), and not the manifest
+# that would make htl try to install that dependency into `.htl/modules/` during the
+# build — writing into the tree `cargo publish` verifies is what it refuses. Nor the
+# dependency's own project files, tests and docs, nor this project's dev tooling.
+exclude = [
+    "mlua-pkg.toml",
+    "mlua-pkg.lock",
+    "patches/htlx/htl.toml",
+    "patches/htlx/mlua-pkg.toml",
+    "patches/htlx/README.md",
+    "patches/htlx/tests/**",
+    "e2e/**",
+    "tools/**",
+    "justfile",
+    "workspace/**",
+]
 
 [dependencies]
 # 0.5.1 carries what main was pinned for: an installed dependency read at its entry
