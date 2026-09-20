@@ -2,3 +2,4 @@
 *.hb
 /target
 __pycache__/
+workspace/
