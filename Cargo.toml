@@ -2,7 +2,14 @@
 name = "cardbox"
 version = "0.1.0"
 edition = "2024"
-# authors / license / repository: fill in yourself
+authors = ["Yutaka Nishimura"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ynishi/cardbox"
+homepage = "https://github.com/ynishi/cardbox"
+description = "An append-only record of every run: samples, evals, checkpoints, params, tags and aliases over one eventsdb log, with a Teal policy layer and a CLI."
+readme = "README.md"
+keywords = ["event-sourcing", "experiment-tracking", "sqlite", "lua", "teal"]
+categories = ["command-line-utilities", "database", "development-tools"]
 
 [dependencies]
 # 0.5.1 carries what main was pinned for: an installed dependency read at its entry

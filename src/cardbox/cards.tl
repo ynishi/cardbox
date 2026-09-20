@@ -68,7 +68,7 @@ local record cards
    --
    -- `work_url` is a URL and not a path: `file:///Users/me/tasks/x`, `https://…`, `s3://…`.
    -- A bare path is refused rather than given a `file://`, because the paths that arrive
-   -- bare are the relative ones (`workspace/tasks/x`), and only the writer knows what
+   -- bare are the relative ones (`tasks/x`), and only the writer knows what
    -- they are relative to. Making the writer say so is what the scheme is for.
    record OpenSpec
       pkg: string

@@ -1,6 +1,8 @@
-"""card/v0 (~/.algocline/cards) -> cardbox, through the installed `cardbox` CLI.
+"""card/v0 (alc's card dir) -> cardbox, through the installed `cardbox` CLI.
 
     python3 tools/import_v0.py <cardbox root> [<limit>]
+
+The source is alc's default card dir, or `ALC_CARDS_DIR` when set.
 
 One v0 card becomes:
   open   --id <card_id> --params <params + pkg-owned sections> [--model <model.id>]
@@ -13,13 +15,13 @@ Aliases from _aliases.toml whose card exists are set afterwards.
 Every refusal is logged and the run continues; the run is idempotent per card id.
 
 v0's `model.id` held two different things: an LLM's id (`claude-opus-4-6`) and, far more
-often, the name of the flow that ran (`coding_orch`, `flow_design`). Only the first is a
+often, the name of the flow that ran (`my_orch`, `my_flow`). Only the first is a
 model. An id that is not one goes to the tag `flow`, with the original spelling kept under
 `v0.model_id`, and the card's `model` is left unset rather than filled with a placeholder.
 """
 import json, os, re, subprocess, sys, tomllib, tempfile, time, collections
 
-SRC = os.path.expanduser("~/.algocline/cards")
+SRC = os.environ.get("ALC_CARDS_DIR") or os.path.join(os.path.expanduser("~"), ".algocline", "cards")
 ROOT = sys.argv[1]
 LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else None
 NAME = re.compile(r"^[A-Za-z0-9_\-]+$")

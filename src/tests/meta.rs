@@ -29,7 +29,7 @@ fn params_and_identity_are_written_at_the_open_and_read_back_whole() -> anyhow::
         })
         assert(bare == nil and berr:find('scheme'), 'a bare path is refused: ' .. tostring(berr))
         local rel, relerr = cards.open(store, {
-           pkg = 'cot', scenario = 'arith', source = 'eval', created_by = 'x', work_url = 'workspace/tasks/x',
+           pkg = 'cot', scenario = 'arith', source = 'eval', created_by = 'x', work_url = 'tasks/x',
         })
         assert(rel == nil and relerr:find('scheme'), 'a relative path too: ' .. tostring(relerr))
         assert(type(card.fingerprint) == 'string' and #card.fingerprint == 16, tostring(card.fingerprint))

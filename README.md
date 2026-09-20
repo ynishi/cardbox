@@ -73,6 +73,16 @@ followed) rather than `open_unclosed`.
 the card already carries that value — and `cards.untag` writes `tag_unset`; the stream is
 the history and `cb_tags` is the current value. Last write wins.
 
+**What has no slot of its own goes in `params` or in a tag.** The dataset a run was scored
+on, the hash or the bytes of the prompt it was given, the provider and the version behind
+a `model` id: none of these is a column today, and all of them are searchable the moment
+they are written — `params = { dataset = "gsm8k-v2", prompt_sha = "…" }` is found with
+`params.dataset = gsm8k-v2`, and a tag `dataset.id=gsm8k-v2` with `tags.dataset.id`.
+Put what the run was *given* in `params` (it goes into the fingerprint, so two runs with
+the same dataset and prompt print the same) and what is *said about* the run afterwards
+in a tag. A key that turns out to be asked on every query is promoted to a column the way
+`model` was, under a new projection name, without changing what was written.
+
 `find` reaches all three: a clause's column is one of `cb_cards`' columns, or
 `params.<path>` / `stats.<path>` (a `json_extract` on the JSON the open or the close wrote)
 or `tags.<key>` (the card's current value for that key). The path is validated to
@@ -162,8 +172,8 @@ inline batches and the blobs, and the same DSL — all of it this time, `_or` an
 included, because it runs over decoded rows — keeps the ones a `where` matches, with
 `offset` and `limit` applied after. The CLI has both as `compat find` and `rows`.
 
-`tools/import_v0.py` is the other half of the seam: `~/.algocline/cards` into a cardbox
-root, with the mapping the translation assumes.
+`tools/import_v0.py` is the other half of the seam: alc's card dir into a cardbox root,
+with the mapping the translation assumes.
 
 ## Prune and export
 
