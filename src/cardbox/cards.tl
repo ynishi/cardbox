@@ -55,6 +55,13 @@ local record cards
 
    -- What `open` is given. `pkg` / `scenario` / `source` / `created_by` are required;
    -- `id` is the caller's own name for the card, and when it is absent one is minted.
+   --
+   -- The rest is what a run knows about itself before it starts, and all of it is
+   -- immutable from the open on. `params` is the run's input — the knobs that were set,
+   -- as one table of whatever shape the pkg keeps them in — and its fingerprint is minted
+   -- from it so that two runs given the same knobs can be told to be. `model`, `trace_id`
+   -- and `task_dir` are the run's identity: which model answered, which trace it is a
+   -- part of, where it ran. They are scalars because they are what a reader asks *by*.
    record OpenSpec
       pkg: string
       scenario: string
@@ -63,6 +70,10 @@ local record cards
       parents: {string}
       note: string
       id: string
+      params: any
+      model: string
+      trace_id: string
+      task_dir: string
    end
 
    -- What `open` hands back: enough to write the rest of the card without reading it.
@@ -74,6 +85,7 @@ local record cards
       source: string
       created_by: string
       state: string
+      fingerprint: string
    end
 
    -- What `append_samples` hands back. `blob` and `size` are set only when the batch was
@@ -127,6 +139,11 @@ local record cards
       created_by: string
       parents: {string}
       note: string
+      model: string
+      trace_id: string
+      task_dir: string
+      fingerprint: string
+      params: any
       state: string
       opened_ms: integer
       closed_ms: integer
@@ -136,6 +153,7 @@ local record cards
       samples: Samples
       evals: integer
       checkpoints: {Checkpoint}
+      tags: {string:string}
       aliases: {string}
    end
 end
@@ -151,6 +169,19 @@ local INLINE_LIMIT = 64 * 1024
 -- downstream — no spaces, no dots, no separators.
 local NAME = "^[%w_%-]+$"
 
+-- What a tag's key may be spelled with: a dotted namespace, the way OpenTelemetry spells
+-- attribute keys (`review.verdict`, `data.split`), and nothing that would need quoting
+-- in a `--where`. A value is any string; the empty one is refused because "set to
+-- nothing" and "unset" would otherwise be two spellings of one thing.
+local TAG_KEY = "^[%w_%-]+%.?[%w_%-%.]*$"
+
+-- Who an assessment came from. The three MLflow's assessments distinguish, because the
+-- question a reader asks is exactly "was this the run scoring itself, a judge, or a
+-- person": `code` is the run's own evaluator, `llm_judge` a model asked afterwards,
+-- `human` somebody who looked.
+local SOURCES: {string:boolean} = { code = true, llm_judge = true, human = true }
+local SOURCE_LIST = "code, llm_judge, human"
+
 -- One seed per module load. `os.time()` alone repeats for every card minted within the
 -- same second, which is exactly the window two cards of one run share; `os.clock()` is
 -- the process's own CPU time and separates them.
@@ -165,6 +196,19 @@ local function required_string(v: any, field: string): string, string
       return nil, field .. " is required"
    end
    return s
+end
+
+-- A string that may be absent. Present and not a string is the mistake this refuses;
+-- present and empty is treated as absent, because a CLI hands `--model ''` through as
+-- a string and nobody meant a model called nothing.
+local function optional_string(v: any, field: string): string, string
+   if v == nil or v == "" then
+      return nil
+   end
+   if type(v) ~= "string" then
+      return nil, field .. " must be a string, got a " .. type(v)
+   end
+   return v as string
 end
 
 local function required_name(v: any, field: string): string, string
@@ -267,11 +311,43 @@ function cards.open(s: store, spec: cards.OpenSpec): cards.Card, string
       id = minted
    end
 
+   local model, merr = optional_string(spec.model, "model")
+   if merr ~= nil then
+      return nil, merr
+   end
+   local trace_id, terr = optional_string(spec.trace_id, "trace_id")
+   if terr ~= nil then
+      return nil, terr
+   end
+   local task_dir, derr = optional_string(spec.task_dir, "task_dir")
+   if derr ~= nil then
+      return nil, derr
+   end
+   local fingerprint: string
+   if spec.params ~= nil then
+      if type(spec.params) ~= "table" then
+         return nil, "open takes params as a table, got a " .. type(spec.params)
+      end
+      -- The fingerprint is of the params and of nothing else: not the pkg, not the
+      -- scenario, not the model. It answers "were these two runs given the same knobs",
+      -- and a reader who wants "the same knobs *and* the same model" has both columns.
+      fingerprint = s:digest(spec.params)
+   end
+
    local stream = "card-" .. id
    -- `meta` is scalars only — the store's log indexes it and refuses anything nested — so
-   -- the list-valued `parents` and the free-text `note` go in `data`.
-   local meta = { pkg = pkg, scenario = scenario, source = source, created_by = created_by }
-   local data = { parents = parents, note = spec.note }
+   -- the list-valued `parents`, the free-text `note` and the `params` table go in `data`.
+   local meta = {
+      pkg = pkg,
+      scenario = scenario,
+      source = source,
+      created_by = created_by,
+      model = model,
+      trace_id = trace_id,
+      task_dir = task_dir,
+      fingerprint = fingerprint,
+   }
+   local data = { parents = parents, note = spec.note, params = spec.params }
    local rec, aerr = s:append_if(stream, "unwritten", "card_opened", meta, data)
    if aerr ~= nil then
       return nil, aerr
@@ -288,6 +364,7 @@ function cards.open(s: store, spec: cards.OpenSpec): cards.Card, string
       source = source,
       created_by = created_by,
       state = "open",
+      fingerprint = fingerprint,
    }
 end
 
@@ -351,7 +428,7 @@ end
 --- Record one eval result on an open card. The whole object goes in the event: an eval is
 --- a summary plus the failures it wants to show, a few kilobytes, and splitting it out
 --- would cost a blob read to answer "how did this score".
-function cards.record_eval(s: store, id: string, eval: any): store.Recorded, string
+function cards.record_eval(s: store, id: string, eval: any, source?: string): store.Recorded, string
    local card, err = required_name(id, "id")
    if card == nil then
       return nil, err
@@ -359,12 +436,98 @@ function cards.record_eval(s: store, id: string, eval: any): store.Recorded, str
    if type(eval) ~= "table" then
       return nil, "record_eval takes the eval as a table, got a " .. type(eval)
    end
-   local rec, aerr = s:append_if("card-" .. card, "open_unclosed", "eval_recorded", nil, eval)
+   -- The run's own evaluator unless the caller says otherwise: an eval recorded while a
+   -- card is being written is, nearly always, the run scoring itself.
+   local who = source or "code"
+   if type(who) ~= "string" or SOURCES[who] == nil then
+      return nil, "record_eval takes source as one of " .. SOURCE_LIST .. ", got "
+         .. string.format("%q", tostring(source))
+   end
+   -- `opened` and not `open_unclosed`: an assessment is said *about* a run, by a judge
+   -- or a person who may come along long after it closed, and a close ends what the run
+   -- produces rather than what can be said of it. This is the one write a closed card
+   -- takes besides a tag.
+   local rec, aerr = s:append_if("card-" .. card, "opened", "eval_recorded", { source = who }, eval)
    if aerr ~= nil then
       return nil, aerr
    end
    if rec == nil then
-      return nil, not_open(s, card, "record an eval on")
+      return nil, "cannot record an eval on card " .. card .. ": no card was opened under that id"
+   end
+   return rec
+end
+
+--- Put a label on a card, or move one. `nil, nil` when the card already carries exactly
+--- this value, so a schedule that re-tags what it already tagged writes nothing.
+---
+--- A tag is the mutable slot. Everything else on a card is written once — the open, the
+--- close, each sample batch — and a tag is the one thing meant to be changed afterwards:
+--- `stage=prod` moves to the next card, `review.verdict` is overturned. What moved is on
+--- the stream, in order; what is current is in `cb_tags`.
+function cards.tag(s: store, id: string, key: string, value: string): store.Recorded, string
+   local card, err = required_name(id, "id")
+   if card == nil then
+      return nil, err
+   end
+   if type(key) ~= "string" or key:match(TAG_KEY) == nil then
+      return nil, "a tag key is a dotted name, letters, digits, _ and -, got "
+         .. string.format("%q", tostring(key))
+   end
+   if type(value) ~= "string" or value == "" then
+      return nil, "a tag value is a non-empty string, got " .. string.format("%q", tostring(value))
+   end
+   -- Read before write, and not under the store's lock: the worst a race here does is
+   -- write a `tag_set` that repeats the value already there, which the fold overwrites
+   -- with itself. The invariant a tag has — the card exists — is the decision's.
+   local rows, qerr = s:query("SELECT value FROM cb_tags WHERE card_id = ? AND key = ?", { card, key })
+   if rows == nil then
+      return nil, qerr
+   end
+   if #rows == 1 and (rows[1] as {string:any}).value == value then
+      return nil, nil
+   end
+   local rec, aerr = s:append_if("card-" .. card, "opened", "tag_set", { key = key, value = value }, nil)
+   if aerr ~= nil then
+      return nil, aerr
+   end
+   if rec == nil then
+      return nil, "cannot tag card " .. card .. ": no card was opened under that id"
+   end
+   return rec
+end
+
+--- Take a label off a card. `nil, nil` when it carried no such key.
+function cards.untag(s: store, id: string, key: string): store.Recorded, string
+   local card, err = required_name(id, "id")
+   if card == nil then
+      return nil, err
+   end
+   if type(key) ~= "string" or key:match(TAG_KEY) == nil then
+      return nil, "a tag key is a dotted name, letters, digits, _ and -, got "
+         .. string.format("%q", tostring(key))
+   end
+   local rows, qerr = s:query("SELECT value FROM cb_tags WHERE card_id = ? AND key = ?", { card, key })
+   if rows == nil then
+      return nil, qerr
+   end
+   if #rows == 0 then
+      -- Nothing to take off — but "no such tag" on a card that exists and "no such card"
+      -- are different answers, and only the first is `nil, nil`.
+      local present, perr = s:query("SELECT 1 AS one FROM cb_cards WHERE id = ?", { card })
+      if present == nil then
+         return nil, perr
+      end
+      if #present == 0 then
+         return nil, "cannot untag card " .. card .. ": no card was opened under that id"
+      end
+      return nil, nil
+   end
+   local rec, aerr = s:append_if("card-" .. card, "opened", "tag_unset", { key = key }, nil)
+   if aerr ~= nil then
+      return nil, aerr
+   end
+   if rec == nil then
+      return nil, "cannot untag card " .. card .. ": no card was opened under that id"
    end
    return rec
 end
@@ -484,6 +647,7 @@ function cards.fold(s: store, id: string): cards.CardView, string
       samples = { batches = 0, rows = 0 },
       evals = 0,
       checkpoints = {},
+      tags = {},
       -- Empty, and not because this card has no names: a name is bound on `alias-<name>`
       -- and this reads `card-<id>`. Asking the fold for it would mean reading every alias
       -- stream in the store, which is the question the projection already answered.
@@ -503,13 +667,26 @@ function cards.fold(s: store, id: string): cards.CardView, string
             view.scenario = meta.scenario as string
             view.source = meta.source as string
             view.created_by = meta.created_by as string
+            view.model = meta.model as string
+            view.trace_id = meta.trace_id as string
+            view.task_dir = meta.task_dir as string
+            view.fingerprint = meta.fingerprint as string
          end
          if data ~= nil then
             view.note = data.note as string
+            view.params = data.params
             local parents = data.parents as {string}
             if parents ~= nil then
                view.parents = parents
             end
+         end
+      elseif e.kind == "tag_set" then
+         if meta ~= nil then
+            view.tags[meta.key as string] = meta.value as string
+         end
+      elseif e.kind == "tag_unset" then
+         if meta ~= nil then
+            view.tags[meta.key as string] = nil
          end
       elseif e.kind == "samples_appended" then
          view.samples.batches = view.samples.batches + 1
@@ -572,6 +749,7 @@ function cards.get(s: store, id: string): cards.CardView, string
 
    local rows, qerr = s:query(
       "SELECT id, pkg, scenario, source, created_by, note, state, opened_ms, closed_ms, "
+         .. "model, trace_id, task_dir, fingerprint, params_json, "
          .. "error, stats_json, cost_json, sample_batches, sample_rows, eval_count "
          .. "FROM cb_cards WHERE id = ?",
       { card }
@@ -591,6 +769,10 @@ function cards.get(s: store, id: string): cards.CardView, string
       source = row.source as string,
       created_by = row.created_by as string,
       note = row.note as string,
+      model = row.model as string,
+      trace_id = row.trace_id as string,
+      task_dir = row.task_dir as string,
+      fingerprint = row.fingerprint as string,
       state = row.state as string,
       opened_ms = row.opened_ms as integer,
       closed_ms = row.closed_ms as integer,
@@ -602,9 +784,17 @@ function cards.get(s: store, id: string): cards.CardView, string
       },
       evals = row.eval_count as integer,
       checkpoints = {},
+      tags = {},
       aliases = {},
    }
 
+   if row.params_json ~= nil then
+      local params, perr = s:json_decode(row.params_json as string)
+      if params == nil then
+         return nil, perr
+      end
+      view.params = params
+   end
    if row.stats_json ~= nil then
       local stats, serr = s:json_decode(row.stats_json as string)
       if stats == nil then
@@ -635,6 +825,15 @@ function cards.get(s: store, id: string): cards.CardView, string
    view.aliases = list.map(named, function(r: any): string
       return (r as {string:any}).name as string
    end)
+
+   local tagged, terr = s:query("SELECT key, value FROM cb_tags WHERE card_id = ? ORDER BY key", { card })
+   if tagged == nil then
+      return nil, terr
+   end
+   for i = 1, #tagged do
+      local tag = tagged[i] as {string:any}
+      view.tags[tag.key as string] = tag.value as string
+   end
 
    local saved, kerr = s:query(
       "SELECT blob, size, format FROM cb_checkpoints WHERE card_id = ? ORDER BY seq",

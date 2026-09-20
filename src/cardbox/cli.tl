@@ -320,6 +320,10 @@ local OPEN = spec("open", {
    parent = TEXTS,
    note = TEXT,
    id = TEXT,
+   params = TEXT,
+   model = TEXT,
+   trace_id = TEXT,
+   task_dir = TEXT,
 })
 
 local function cmd_open(s: store, argv: {string}): string, string
@@ -334,6 +338,15 @@ local function cmd_open(s: store, argv: {string}): string, string
    if created_by == nil then
       created_by = "cardbox " .. cardbox.version()
    end
+   local params: any
+   local text = cli.value(args, "params")
+   if text ~= nil then
+      local v, jerr = s:json_decode(text)
+      if jerr ~= nil then
+         return nil, "--params is not JSON: " .. jerr
+      end
+      params = v
+   end
    local card, err = cards.open(s, {
       pkg = cli.value(args, "pkg"),
       scenario = cli.value(args, "scenario"),
@@ -342,6 +355,10 @@ local function cmd_open(s: store, argv: {string}): string, string
       parents = cli.list(args, "parent"),
       note = cli.value(args, "note"),
       id = cli.value(args, "id"),
+      params = params,
+      model = cli.value(args, "model"),
+      trace_id = cli.value(args, "trace_id"),
+      task_dir = cli.value(args, "task_dir"),
    })
    if card == nil then
       return nil, err
@@ -397,7 +414,7 @@ local function cmd_samples(s: store, argv: {string}): string, string
    return encode(s, appended)
 end
 
-local EVAL = spec("eval", { file = TEXT }, { { name = "id", required = true } })
+local EVAL = spec("eval", { file = TEXT, source = TEXT }, { { name = "id", required = true } })
 
 local function cmd_eval(s: store, argv: {string}): string, string
    local args, perr = cli.parse(argv, EVAL)
@@ -418,11 +435,62 @@ local function cmd_eval(s: store, argv: {string}): string, string
       return nil, file .. " is not JSON: " .. jerr
    end
 
-   local rec, err = cards.record_eval(s, id, eval)
+   local rec, err = cards.record_eval(s, id, eval, cli.value(args, "source"))
    if rec == nil then
       return nil, err
    end
-   return encode(s, { id = id, seq = rec.seq, kind = rec.kind, epoch_ms = rec.epoch_ms })
+   local meta = rec.meta as {string:any}
+   return encode(s, {
+      id = id,
+      seq = rec.seq,
+      kind = rec.kind,
+      source = meta.source,
+      epoch_ms = rec.epoch_ms,
+   })
+end
+
+local TAG_SET = spec(
+   "tag set",
+   {},
+   { { name = "id", required = true }, { name = "key", required = true }, { name = "value", required = true } }
+)
+local TAG_UNSET = spec("tag unset", {}, { { name = "id", required = true }, { name = "key", required = true } })
+
+-- `tag` has a word after it the way `alias` does: two things are done to a label and they
+-- take different arguments. Both answer `changed`, which is false when the store had
+-- nothing to write — the value was already there, or the key already was not.
+local function cmd_tag(s: store, argv: {string}): string, string
+   local what = argv[1]
+   local rest = list.drop(argv, 1)
+
+   if what == "set" then
+      local args, perr = cli.parse(rest, TAG_SET)
+      if args == nil then
+         return nil, perr
+      end
+      local id = cli.arg(args, "id")
+      local key = cli.arg(args, "key")
+      local value = cli.arg(args, "value")
+      local rec, err = cards.tag(s, id, key, value)
+      if err ~= nil then
+         return nil, err
+      end
+      return encode(s, { id = id, key = key, value = value, changed = rec ~= nil })
+   elseif what == "unset" then
+      local args, perr = cli.parse(rest, TAG_UNSET)
+      if args == nil then
+         return nil, perr
+      end
+      local id = cli.arg(args, "id")
+      local key = cli.arg(args, "key")
+      local rec, err = cards.untag(s, id, key)
+      if err ~= nil then
+         return nil, err
+      end
+      return encode(s, { id = id, key = key, changed = rec ~= nil })
+   end
+
+   return nil, "tag takes set or unset, got " .. string.format("%q", tostring(what))
 end
 
 local CHECKPOINT = spec(
@@ -814,17 +882,23 @@ local USAGE = table.concat({
    "",
    "A card's life:",
    "  open        --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...]",
-   "              [--note N] [--id ID]",
+   "              [--note N] [--id ID] [--params JSON] [--model M] [--trace-id T]",
+   "              [--task-dir D]",
    "  samples     <id> [--file rows.jsonl]    one JSON object per line; stdin without --file",
-   "  eval        <id> --file eval.json",
+   "  eval        <id> --file eval.json [--source code|llm_judge|human]",
    "  checkpoint  <id> --file weights.bin --format safetensors [--note N]",
    "  close       <id> [--ok | --failed --error MSG] [--stats JSON] [--cost JSON]",
+   "",
+   "Said about a card, open or closed:",
+   "  tag set <id> <key> <value>              tag unset <id> <key>",
+   "  eval        (as above; an eval is the other thing a closed card takes)",
    "",
    "Reading:",
    "  get         <id>",
    "  list        [--pkg P] [--state S] [--limit N] [--offset N]",
    "  find        --where 'col op value' [--where ...] [--order-by col] [--asc]",
    "              [--limit N] [--offset N]",
+   "              col is a column, or params.<path>, stats.<path>, tags.<key>",
    "  lineage     <id> [--depth N]",
    "",
    "Names:",
@@ -850,7 +924,7 @@ local USAGE = table.concat({
 ---
 --- Written out rather than assembled from the specs above: `std.argparse.usage` describes
 --- one command at a time, and what a person typing `cardbox` with no arguments wants is the
---- shape of all nineteen at once, grouped by what they are for.
+--- shape of all twenty at once, grouped by what they are for.
 function cli.usage(): string
    return USAGE
 end
@@ -861,6 +935,7 @@ local HANDLERS: {string:Handler} = {
    eval = cmd_eval,
    checkpoint = cmd_checkpoint,
    close = cmd_close,
+   tag = cmd_tag,
    get = cmd_get,
    list = cmd_list,
    find = cmd_find,

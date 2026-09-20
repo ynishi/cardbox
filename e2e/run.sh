@@ -67,7 +67,9 @@ ok "version $(printf '%s' "$VERSION" | jq -r .cardbox), root $ROOT"
 
 # ------------------------------------------------------------------ two cards
 
-PARENT_JSON="$($CARDBOX open --pkg demo --scenario arith --source e2e --note 'the first run')"
+PARENT_JSON="$($CARDBOX open --pkg demo --scenario arith --source e2e --note 'the first run' \
+   --params '{"temperature": 0.2, "variant": "b"}' --model demo-model --trace-id tr-e2e)"
+assert "the open minted a fingerprint" "$PARENT_JSON" '(.fingerprint | length) == 16'
 assert "open the parent" "$PARENT_JSON" '.state == "open" and .pkg == "demo"'
 PARENT="$(printf '%s' "$PARENT_JSON" | jq -r .id)"
 
@@ -121,10 +123,28 @@ assert "the parent's checkpoint hash" "$PARENT_VIEW" \
    '(.checkpoints | length) == 1 and (.checkpoints[0].blob | length) == 64'
 assert "the parent's stats came back" "$PARENT_VIEW" '.stats.mean_score == 0.8'
 
+assert "the parent's params came back" "$PARENT_VIEW" '.params.variant == "b" and .model == "demo-model"'
+
 CHILD_VIEW="$($CARDBOX get "$CHILD")"
 assert "the child is closed_failed" "$CHILD_VIEW" '.state == "closed_failed"'
 assert "the child kept why it failed" "$CHILD_VIEW" '.error == "the provider timed out"'
 ok "get both: closed_ok with 5 rows and a checkpoint, closed_failed with its reason"
+
+# ------------------------------------------------------------------ said about a closed card
+
+assert "a human eval on a closed card" \
+   "$(printf '%s' '{"verdict": "ship"}' >"$FIXTURES/review.json"; \
+      $CARDBOX eval "$PARENT" --file "$FIXTURES/review.json" --source human)" \
+   '.source == "human"'
+assert "tag set" "$($CARDBOX tag set "$PARENT" stage prod)" '.changed == true'
+assert "tag set again writes nothing" "$($CARDBOX tag set "$PARENT" stage prod)" '.changed == false'
+assert "the card carries the tag and two evals" "$($CARDBOX get "$PARENT")" \
+   '.tags.stage == "prod" and .evals == 2'
+assert "find by params and by tag" \
+   "$($CARDBOX find --where 'params.variant = b' --where 'tags.stage = prod' --where 'model = demo-model')" \
+   --arg p "$PARENT" 'length == 1 and .[0].id == $p'
+assert "tag unset" "$($CARDBOX tag unset "$PARENT" stage)" '.changed == true'
+ok "closed card: a human eval, a tag set once, found by params.variant and tags.stage, tag unset"
 
 # ------------------------------------------------------------------ alias
 

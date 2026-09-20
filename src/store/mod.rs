@@ -26,7 +26,7 @@ use projection::{ALIAS_PREFIX, CardsProjection, STREAM_PREFIX};
 /// A database written by one of them holds every event; what it does not hold is a cursor
 /// this build's projection can use. See [`Store::carry_forward`] for what is done about
 /// that, and [`projection`]'s module doc for why the name is the version.
-const RETIRED: [&str; 2] = ["cards_v1", "cards_v2"];
+const RETIRED: [&str; 3] = ["cards_v1", "cards_v2", "cards_v3"];
 
 /// A Lua string, in and out, as bytes rather than as `&str`.
 ///
@@ -533,6 +533,21 @@ impl Store {
 
     /// `text`, parsed. The other direction, for reading back what `blob_put` was handed:
     /// a blob is bytes to this store and JSON only to whoever wrote it.
+    /// A short, stable fingerprint of a JSON value: the first 16 hex digits of the SHA-256
+    /// of its canonical text, where canonical means every object's keys are in sorted
+    /// order and nothing is pretty-printed.
+    ///
+    /// Here rather than in Teal because Teal has no hash, and canonical because two runs
+    /// that were given the same params should print the same whatever order their tables
+    /// happened to be walked in. What goes *into* the fingerprint is the policy side's
+    /// call — `cards.open` hands it `params` and nothing else — and this only answers what
+    /// those bytes are called.
+    pub fn digest(&self, v: Value) -> String {
+        let canonical = canonical_json(&v.0);
+        let hash = Sha256::digest(canonical.as_bytes());
+        hex::encode(&hash[..8])
+    }
+
     pub fn json_decode(&self, text: &str) -> anyhow::Result<Value> {
         Ok(Value(serde_json::from_str(text)?))
     }
@@ -609,7 +624,7 @@ impl Store {
 /// write lands, and each names the kinds it needs: the fold is shown only those, which is
 /// the difference between reading a long stream and reading three events of it.
 ///
-/// The first three are what `append_if` will look up by name. The two alias folds are
+/// The first four are what `append_if` will look up by name. The two alias folds are
 /// not: they are reached only through [`Store::bind_alias`] and [`Store::release_alias`],
 /// because a bind that skipped the card read those methods do first is the bug the whole
 /// step is about. Teal chooses between the methods; it cannot assemble one.
@@ -621,6 +636,10 @@ enum Rule {
     OpenUnclosed,
     /// No `card_closed` is on the stream. The fold a close itself runs.
     ClosedAbsent,
+    /// A `card_opened` is on the stream, whatever came after it. The fold an assessment
+    /// and a tag run: those are said *about* a run, not produced by it, so a close does
+    /// not end them the way it ends samples and checkpoints.
+    Opened,
     /// This alias does not currently mean this card — either it means another one or it
     /// means nothing. The fold a bind runs.
     AliasNot(String),
@@ -655,13 +674,14 @@ fn bound_to(seen: &[eventsdb::Current]) -> Option<String> {
 }
 
 impl Rule {
-    const KNOWN: &'static str = r#""unwritten", "open_unclosed", "closed_absent""#;
+    const KNOWN: &'static str = r#""unwritten", "open_unclosed", "closed_absent", "opened""#;
 
     fn parse(name: &str) -> anyhow::Result<Rule> {
         match name {
             "unwritten" => Ok(Rule::Unwritten),
             "open_unclosed" => Ok(Rule::OpenUnclosed),
             "closed_absent" => Ok(Rule::ClosedAbsent),
+            "opened" => Ok(Rule::Opened),
             other => Err(anyhow::anyhow!(
                 "unknown decision {other:?}; the decisions this store knows are {}",
                 Rule::KNOWN
@@ -677,6 +697,7 @@ impl Rule {
             Rule::Unwritten => None,
             Rule::OpenUnclosed => Some(&["card_opened", "card_closed"]),
             Rule::ClosedAbsent => Some(&["card_closed"]),
+            Rule::Opened => Some(&["card_opened"]),
             Rule::AliasNot(_) | Rule::AliasBound => Some(&["alias_bound", "alias_released"]),
         }
     }
@@ -689,9 +710,34 @@ impl Rule {
                     && !seen.iter().any(|e| e.kind() == "card_closed")
             }
             Rule::ClosedAbsent => !seen.iter().any(|e| e.kind() == "card_closed"),
+            Rule::Opened => seen.iter().any(|e| e.kind() == "card_opened"),
             Rule::AliasNot(card_id) => bound_to(seen).as_deref() != Some(card_id.as_str()),
             Rule::AliasBound => bound_to(seen).is_some(),
         }
+    }
+}
+
+/// `v` as text with every object's keys sorted, so equal values print equal.
+///
+/// serde_json's `Map` is already a `BTreeMap` unless `preserve_order` is on, and a
+/// dependency could turn that on for the whole build without this crate noticing; walking
+/// the value here is what keeps the fingerprint independent of that.
+fn canonical_json(v: &Json) -> String {
+    match v {
+        Json::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let fields: Vec<String> = keys
+                .into_iter()
+                .map(|k| format!("{}:{}", Json::String(k.clone()), canonical_json(&map[k])))
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        Json::Array(items) => {
+            let items: Vec<String> = items.iter().map(canonical_json).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => other.to_string(),
     }
 }
 

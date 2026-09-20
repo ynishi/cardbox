@@ -398,7 +398,7 @@ fn a_database_written_under_the_old_projection_name_is_carried_forward() -> anyh
            'SELECT consumer, position FROM checkpoints ORDER BY consumer', {})
         assert(e2 == nil, tostring(e2))
         assert(#marks == 2, #marks)
-        assert(marks[1].consumer == 'cards_v1' and marks[2].consumer == 'cards_v3', marks[2].consumer)
+        assert(marks[1].consumer == 'cards_v1' and marks[2].consumer == 'cards_v4', marks[2].consumer)
         assert(marks[1].position == marks[2].position, 'the retired cursor is not behind')
 
         local rec, e3 = cards.alias(store, 'champion', 'mig_two')
@@ -448,6 +448,45 @@ fn the_name_this_build_retired_last_is_carried_forward_too() -> anyhow::Result<(
         "#,
     )?;
     assert_eq!(out, ["mig_two"]);
+    Ok(())
+}
+
+/// `cards_v3` is the model before `params`, the run identity columns, `cb_evals.source`
+/// and `cb_tags`. Its rows lack the columns, so a store it wrote has to be refolded rather
+/// than added to — and after the refold the new writes work on it: a tag on one of the old
+/// cards, and a `find` by the JSON path the old model could not answer.
+#[test]
+fn the_name_before_params_and_tags_is_carried_forward_too() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    write_under_the_old_name(dir.path(), "cards_v3")?;
+
+    let h = Htl::new()?;
+    crate::preload(&h, dir.path())?;
+    let out: Vec<String> = eval(
+        &h,
+        r#"
+        local cards = require('cardbox').cards
+        local store = require('store')
+
+        assert(cards.get(store, 'mig_one').samples.rows == 2, 'counted once, not twice')
+        assert(cards.get(store, 'mig_one').params == nil, 'the old open carried no params')
+
+        local rec, err = cards.tag(store, 'mig_one', 'stage', 'prod')
+        assert(err == nil and rec ~= nil, tostring(err))
+        assert(cards.get(store, 'mig_one').tags.stage == 'prod', 'a closed old card takes a tag')
+
+        -- mig_one closed at 0.4 and mig_two at 0.9: the path reaches the old close's JSON.
+        local found, ferr = cards.find(store, {
+           clauses = { { column = 'stats.mean_score', op = '<', value = 0.5 } },
+        })
+        assert(ferr == nil, tostring(ferr))
+
+        local out = {}
+        for i, entry in ipairs(found) do out[i] = entry.id end
+        return out
+        "#,
+    )?;
+    assert_eq!(out, ["mig_one"]);
     Ok(())
 }
 

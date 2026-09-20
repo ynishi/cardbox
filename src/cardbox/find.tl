@@ -97,13 +97,23 @@ end
 --
 -- One array read two ways: `list.to_set` for the membership a refusal is decided by, and
 -- `table.concat` for the sentence it is named in. They were two hand-kept spellings of the
--- same seventeen names, which is one place for them to drift apart.
+-- same names, which is one place for them to drift apart.
+--
+-- Beyond the columns there are three prefixes, resolved by `resolve` below. `params.<path>`
+-- and `stats.<path>` reach into the JSON the open and the close wrote, with
+-- `json_extract`; `tags.<key>` reads the card's current value for that key out of
+-- `cb_tags`. The path and the key are validated to a character class before they touch
+-- the SQL text, and the key travels as a bound parameter besides.
 local COLUMN_NAMES = {
    "id",
    "pkg",
    "scenario",
    "source",
    "created_by",
+   "model",
+   "trace_id",
+   "task_dir",
+   "fingerprint",
    "state",
    "opened_ms",
    "closed_ms",
@@ -119,7 +129,43 @@ local COLUMN_NAMES = {
 }
 
 local COLUMNS: {string:boolean} = list.to_set(COLUMN_NAMES)
-local COLUMN_LIST = table.concat(COLUMN_NAMES, ", ")
+local COLUMN_LIST = table.concat(COLUMN_NAMES, ", ") .. ", params.<path>, stats.<path>, tags.<key>"
+
+-- The two JSON columns a dotted path may reach into, by the prefix that names them.
+local JSON_SLOTS: {string:string} = { params = "params_json", stats = "stats_json" }
+
+--- What a column name means in SQL: the column itself, or the expression a prefix expands
+--- to. Answers `expr, param` — `param` is set only for `tags.<key>`, whose key is bound
+--- rather than written — or `nil, nil, err`.
+---
+--- A JSON path is segments of `[%w_]` joined by dots and nothing else, so what reaches the
+--- text inside `'$.…'` cannot close the quote. A tag key is `cards.tag`'s own class and is
+--- bound anyway; the check is so a mistyped one is refused here with the same sentence
+--- rather than matching nothing.
+local function resolve(column: string): string, any, string
+   if COLUMNS[column] then
+      return column
+   end
+   local slot, rest = column:match("^(%a+)%.(.+)$")
+   if slot ~= nil then
+      local path = rest as string
+      if JSON_SLOTS[slot] ~= nil then
+         if path:match("^[%w_.]+$") ~= nil
+            and path:sub(1, 1) ~= "." and path:sub(-1) ~= "." and path:find("%.%.") == nil
+         then
+            return "json_extract(" .. JSON_SLOTS[slot] .. ", '$." .. path .. "')"
+         end
+         return nil, nil, '"' .. column .. '" is not a path: after ' .. slot
+            .. ". come names of letters, digits and _, joined by dots"
+      elseif slot == "tags" then
+         if path:match("^[%w_%-]+%.?[%w_%-%.]*$") ~= nil then
+            return "(SELECT value FROM cb_tags WHERE card_id = cb_cards.id AND key = ?)", path
+         end
+         return nil, nil, '"' .. column .. '" is not a tag key: letters, digits, _, - and dots'
+      end
+   end
+   return nil, nil, '"' .. column .. '" is not one of ' .. COLUMN_LIST
+end
 
 -- The operators, mapped to what they are spelled as in SQL. `in` is the one that is not a
 -- binary comparison: it takes an array and expands to as many placeholders as it has
@@ -258,11 +304,12 @@ function find.build_find(q: find.Query): string, {any}, string
          if clause == nil or type(clause.column) ~= "string" then
             return nil, nil, at .. " needs a column"
          end
-         if COLUMNS[clause.column] == nil then
-            return nil, nil, at .. ' names no column a card can be found by: "'
-               .. clause.column
-               .. '" is not one of '
-               .. COLUMN_LIST
+         local expr, key, rerr = resolve(clause.column)
+         if expr == nil then
+            return nil, nil, at .. " names no column a card can be found by: " .. rerr
+         end
+         if key ~= nil then
+            params[#params + 1] = key
          end
          if type(clause.op) ~= "string" then
             return nil, nil, at .. " needs an op"
@@ -284,10 +331,10 @@ function find.build_find(q: find.Query): string, {any}, string
                   .. type(clause.value)
             end
             local marks = list.fill(#values, "?")
-            parts[#parts + 1] = clause.column .. " IN (" .. table.concat(marks, ", ") .. ")"
+            parts[#parts + 1] = expr .. " IN (" .. table.concat(marks, ", ") .. ")"
             params = list.concat(params, values)
          else
-            parts[#parts + 1] = clause.column .. " " .. op .. " ?" .. (OP_SUFFIX[clause.op] or "")
+            parts[#parts + 1] = expr .. " " .. op .. " ?" .. (OP_SUFFIX[clause.op] or "")
             params[#params + 1] = clause.value
          end
       end
@@ -296,13 +343,18 @@ function find.build_find(q: find.Query): string, {any}, string
 
    local order = "opened_ms"
    if q.order_by ~= nil then
-      if type(q.order_by) ~= "string" or COLUMNS[q.order_by] == nil then
-         return nil, nil, 'order_by names no column a card can be ordered by: "'
-            .. tostring(q.order_by)
-            .. '" is not one of '
-            .. COLUMN_LIST
+      if type(q.order_by) ~= "string" then
+         return nil, nil, "order_by names no column a card can be ordered by: got a " .. type(q.order_by)
       end
-      order = q.order_by
+      local expr, key, rerr = resolve(q.order_by)
+      if expr == nil then
+         return nil, nil, "order_by names no column a card can be ordered by: " .. rerr
+      end
+      -- After the WHERE params, because that is where the `?` lands in the text.
+      if key ~= nil then
+         params[#params + 1] = key
+      end
+      order = expr
    end
    -- Descending unless the caller says otherwise: the newest card, the highest score and
    -- the longest run are what a reader asking for one of these is usually after.

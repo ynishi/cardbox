@@ -27,8 +27,8 @@ retention guard the policy leans on.
 ## Read models
 
 The log answers "what happened to this card"; it does not answer "which cards in `cot`
-scored above 0.5". So `src/store/projection.rs` folds the seven kinds into tables in
-the same `cards.db` — `cb_cards`, `cb_samples`, `cb_evals`, `cb_checkpoints`, `cb_lineage`,
+scored above 0.5". So `src/store/projection.rs` folds the nine kinds into tables in
+the same `cards.db` — `cb_cards`, `cb_samples`, `cb_evals`, `cb_checkpoints`, `cb_tags`, `cb_lineage`,
 `cb_blobs`, `cb_aliases`, `cb_alias_log` — through eventsdb's projection runner, which applies a batch and moves its
 cursor in **one** transaction. That is what exactly-once means here: a fold that fails
 part-way moves neither, so the retry neither double-counts nor skips. The `cb_` prefix
@@ -39,7 +39,51 @@ anyway.
 `cb_cards` carries a close's `stats` and `cost` twice: as the JSON that was written, which
 `get` hands back unchanged, and flattened into `mean_score` / `n` / `pass_rate` / `passed` /
 `elapsed_ms` / `llm_calls`, which is what a `find` compares without `json_extract` on every
-row. `cb_blobs.refs` counts what points at each blob, and is what `store:blob_gc()` reads.
+row. An open's `params` are kept the same way (`params_json`, and `model` / `trace_id` /
+`task_dir` / `fingerprint` as columns), and `cb_tags` holds the current value of every tag.
+`cb_blobs.refs` counts what points at each blob, and is what `store:blob_gc()` reads.
+
+## Params, assessments and tags
+
+Besides what a run produces, three things are said about it, and they are three slots
+because they change on three different schedules — the split MLflow's params / metrics /
+tags and W&B's config / summary / tags both landed on.
+
+**`params`** is what the run was given: the knobs, as one table of whatever shape the pkg
+keeps them in, written by `open` and immutable from there. With it go the run's identity
+— `model`, `trace_id`, `task_dir`, scalars in the event's `meta` and columns in `cb_cards`
+— and a `fingerprint`, the first 16 hex of the SHA-256 of the params' canonical JSON, so
+"the runs given these knobs" is one equality. The fingerprint is of the params alone; a
+reader who means "same knobs, same model" has both columns.
+
+**Assessments** are `eval_recorded` events, and each says who made it: `source` is `code`
+(the run's own evaluator, the default), `llm_judge` or `human`. They are the one thing
+besides a tag that a **closed** card takes. A close ends what the run produces — samples
+and checkpoints are refused after it — but not what can be said of it: a judge that
+re-scores every card weekly and a person who reads one a month later are the normal case,
+not the exception. The decision is `opened` (a `card_opened` is on the stream, whatever
+followed) rather than `open_unclosed`.
+
+**Tags** are the mutable slot: `key=value`, keys dotted like OpenTelemetry attributes
+(`stage`, `review.verdict`), values strings. `cards.tag` writes `tag_set` — or nothing, when
+the card already carries that value — and `cards.untag` writes `tag_unset`; the stream is
+the history and `cb_tags` is the current value. Last write wins.
+
+`find` reaches all three: a clause's column is one of `cb_cards`' columns, or
+`params.<path>` / `stats.<path>` (a `json_extract` on the JSON the open or the close wrote)
+or `tags.<key>` (the card's current value for that key). The path is validated to
+`[A-Za-z0-9_.]` before it reaches the SQL text and the key is bound, never written. A path
+that turns out to be asked on every query is promoted to a column, under a new projection
+name, the way `mean_score` was.
+
+```lua
+cards.open(store, { pkg = "cot", scenario = "arith", source = "eval", created_by = "me",
+                    params = { temperature = 0.2, variant = "b" }, model = "claude-opus-4-6" })
+cards.record_eval(store, id, { verdict = "ship", rationale = "…" }, "human")   -- closed is fine
+cards.tag(store, id, "stage", "prod")
+cards.find(store, { clauses = { { column = "params.variant", op = "=", value = "b" },
+                                { column = "tags.stage", op = "=", value = "prod" } } })
+```
 
 The projection is named `cards_v3`, and the suffix is the migration convention: a shape
 change old rows cannot be carried into is a rename, because a projection's name *is* the
@@ -166,14 +210,15 @@ adapter later is another client of the same API rather than a second implementat
 
 | command | what it does |
 |---|---|
-| `open --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...] [--note N] [--id ID]` | open a card at the start of a run; `--created-by` defaults to `cardbox <version>` |
+| `open --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...] [--note N] [--id ID] [--params JSON] [--model M] [--trace-id T] [--task-dir D]` | open a card at the start of a run; `--created-by` defaults to `cardbox <version>` |
 | `samples <id> [--file rows.jsonl]` | one JSON object per line, from the file or from stdin |
-| `eval <id> --file eval.json` | record one eval result |
+| `eval <id> --file eval.json [--source code\|llm_judge\|human]` | record one assessment; open or closed |
 | `checkpoint <id> --file weights.bin --format safetensors [--note N]` | save a checkpoint as a blob |
 | `close <id> [--ok \| --failed --error MSG] [--stats JSON] [--cost JSON]` | end the run, either way; `--ok` is the default |
+| `tag set <id> <key> <value>` / `tag unset <id> <key>` | a label on a card, open or closed; `changed` says whether anything was written |
 | `get <id>` | the card as it reads now |
 | `list [--pkg P] [--state S] [--limit N] [--offset N]` | the last cards, newest first |
-| `find --where 'col op value' [--where ...] [--order-by col] [--asc] [--limit N] [--offset N]` | one clause per `--where`, ANDed |
+| `find --where 'col op value' [--where ...] [--order-by col] [--asc] [--limit N] [--offset N]` | one clause per `--where`, ANDed; `col` is a column, `params.<path>`, `stats.<path>` or `tags.<key>` |
 | `lineage <id> [--depth N]` | parents, children, and the walk either way |
 | `alias set <name> <id> [--note N]` / `release <name>` / `get <name>` / `list [--pkg P] [--card ID]` / `history <name>` | the names over the cards |
 | `promote --alias A --pkg P [--scenario S] [--metric M] [--min-n N] [--note N]` | put a name on the best closed card of a pkg |

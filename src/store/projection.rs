@@ -1,4 +1,4 @@
-//! The read models: the five card kinds folded into tables in the same file as the log.
+//! The read models: the seven card kinds folded into tables in the same file as the log.
 //!
 //! # Why the fold is here and not in Teal
 //!
@@ -14,7 +14,7 @@
 //!
 //! # The name is the version
 //!
-//! [`CardsProjection::NAME`] is `cards_v3`, and the suffix is the migration convention
+//! [`CardsProjection::NAME`] is `cards_v4`, and the suffix is the migration convention
 //! rather than decoration: a projection's name **is** the primary key of its checkpoint,
 //! so a shape change old rows cannot be carried into is done by renaming the projection.
 //! The new name has no checkpoint, so it starts at the beginning of the log and folds all
@@ -24,9 +24,10 @@
 //!
 //! `cards_v1` was this model without the two alias kinds and without `cb_aliases` /
 //! `cb_alias_log`; `cards_v2` was it without `cards_pruned`, so a database folded by that
-//! build holds rows for cards a journal event has since removed. [`crate::Store::open`]
-//! carries a database written under either name forward; what it does and what it cannot
-//! do is documented there.
+//! build holds rows for cards a journal event has since removed; `cards_v3` was it before
+//! a card carried `params`, a `model` and a run identity in `cb_cards`, a `source` on each
+//! eval, and tags in `cb_tags`. [`crate::Store::open`] carries a database written under
+//! any retired name forward; what it does and what it cannot do is documented there.
 //!
 //! Where this departs from the textbook (Marten's "build the new model beside the old one
 //! and switch when it has caught up"): the two versions here share the `cb_*` table names,
@@ -62,7 +63,7 @@ pub const ALIAS_PREFIX: &str = "alias-";
 /// that vouched for it is.
 pub const PRUNE_STREAM: &str = "prune";
 
-/// The read model over a card's five kinds and an alias's two.
+/// The read model over a card's seven kinds and an alias's two.
 ///
 /// Stateless apart from the name it answers to: everything it knows is in the tables,
 /// which is what makes a rebuild a replay rather than a reconstruction of anything held
@@ -79,8 +80,8 @@ impl Default for CardsProjection {
 
 impl CardsProjection {
     /// The consumer name, and so the identity of the cursor. See the module doc for what
-    /// the `_v3` is for.
-    pub const NAME: &'static str = "cards_v3";
+    /// the `_v4` is for.
+    pub const NAME: &'static str = "cards_v4";
 
     /// The projection this build folds under.
     pub fn new() -> CardsProjection {
@@ -107,12 +108,14 @@ impl CardsProjection {
     /// The kinds these streams carry. Naming them is not only a filter: it is what lets
     /// the runner read through the `(kind, position)` index instead of walking the whole
     /// log, and it is the reason `apply` may treat an unknown kind as a bug.
-    pub const KINDS: [&'static str; 8] = [
+    pub const KINDS: [&'static str; 10] = [
         "card_opened",
         "samples_appended",
         "eval_recorded",
         "checkpoint_saved",
         "card_closed",
+        "tag_set",
+        "tag_unset",
         "alias_bound",
         "alias_released",
         "cards_pruned",
@@ -135,6 +138,20 @@ impl CardsProjection {
 /// 0.5` compares without `json_extract` on every row. A key the writer left out is NULL,
 /// and NULL compares false, which is the answer a filter on a card that never recorded a
 /// score should give.
+///
+/// `params_json` is the same arrangement for what a run was *given*: the JSON as the open
+/// wrote it, for `get`, and beside it the four scalars the open put in its `meta` —
+/// `model`, `trace_id`, `task_dir`, `fingerprint` — as columns, because those are what a
+/// reader asks by ("every card of this model", "the run that trace belongs to") and what a
+/// fingerprint is for is being compared. Anything else inside `params` is reached with
+/// `json_extract`, which is what `find`'s `params.<path>` clauses expand to; a key that
+/// turns out to be asked for on every query is promoted to a column the way these four
+/// were, under a new projection name.
+///
+/// `cb_tags` is the one table here keyed by something a writer chose: a tag is a label a
+/// person or a schedule puts on a card after the fact, and the set of keys is nobody's to
+/// declare in advance. The current value is one row per `(card, key)` that `tag_set`
+/// overwrites and `tag_unset` deletes; the history is the card's stream.
 const CREATE: &str = "\
 CREATE TABLE IF NOT EXISTS cb_cards (
     id               TEXT PRIMARY KEY,
@@ -143,6 +160,11 @@ CREATE TABLE IF NOT EXISTS cb_cards (
     source           TEXT,
     created_by       TEXT,
     note             TEXT,
+    model            TEXT,
+    trace_id         TEXT,
+    task_dir         TEXT,
+    fingerprint      TEXT,
+    params_json      TEXT,
     state            TEXT NOT NULL,
     opened_ms        INTEGER,
     closed_ms        INTEGER,
@@ -164,6 +186,9 @@ CREATE TABLE IF NOT EXISTS cb_cards (
 CREATE INDEX IF NOT EXISTS cb_cards_pkg       ON cb_cards (pkg);
 CREATE INDEX IF NOT EXISTS cb_cards_state     ON cb_cards (state);
 CREATE INDEX IF NOT EXISTS cb_cards_opened_ms ON cb_cards (opened_ms);
+CREATE INDEX IF NOT EXISTS cb_cards_model     ON cb_cards (model);
+CREATE INDEX IF NOT EXISTS cb_cards_trace     ON cb_cards (trace_id);
+CREATE INDEX IF NOT EXISTS cb_cards_print     ON cb_cards (fingerprint);
 
 CREATE TABLE IF NOT EXISTS cb_samples (
     card_id   TEXT    NOT NULL,
@@ -179,10 +204,20 @@ CREATE TABLE IF NOT EXISTS cb_samples (
 CREATE TABLE IF NOT EXISTS cb_evals (
     card_id   TEXT    NOT NULL,
     seq       INTEGER NOT NULL,
+    source    TEXT,
     data_json TEXT,
     epoch_ms  INTEGER,
     PRIMARY KEY (card_id, seq)
 );
+
+CREATE TABLE IF NOT EXISTS cb_tags (
+    card_id  TEXT NOT NULL,
+    key      TEXT NOT NULL,
+    value    TEXT NOT NULL,
+    set_ms   INTEGER,
+    PRIMARY KEY (card_id, key)
+);
+CREATE INDEX IF NOT EXISTS cb_tags_key ON cb_tags (key, value);
 
 CREATE TABLE IF NOT EXISTS cb_checkpoints (
     card_id  TEXT    NOT NULL,
@@ -233,6 +268,7 @@ const DROP: &str = "\
 DROP TABLE IF EXISTS cb_cards;
 DROP TABLE IF EXISTS cb_samples;
 DROP TABLE IF EXISTS cb_evals;
+DROP TABLE IF EXISTS cb_tags;
 DROP TABLE IF EXISTS cb_checkpoints;
 DROP TABLE IF EXISTS cb_lineage;
 DROP TABLE IF EXISTS cb_blobs;
@@ -321,7 +357,9 @@ impl Projection for CardsProjection {
                 data,
             ),
             "samples_appended" => samples(tx, card_id(&event.stream, kind)?, seq, epoch_ms, data),
-            "eval_recorded" => eval(tx, card_id(&event.stream, kind)?, seq, epoch_ms, data),
+            "eval_recorded" => eval(tx, card_id(&event.stream, kind)?, seq, epoch_ms, meta, data),
+            "tag_set" => tag_set(tx, card_id(&event.stream, kind)?, epoch_ms, meta),
+            "tag_unset" => tag_unset(tx, card_id(&event.stream, kind)?, meta),
             "checkpoint_saved" => {
                 checkpoint(tx, card_id(&event.stream, kind)?, seq, epoch_ms, data)
             }
@@ -396,10 +434,12 @@ fn opened(
     meta: Option<&Json>,
     data: Option<&Json>,
 ) -> Result<()> {
+    let params = data.and_then(|d| d.get("params"));
     tx.execute(
-        "INSERT INTO cb_cards (id, pkg, scenario, source, created_by, note, state,
-                               opened_ms, opened_position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7, ?8)
+        "INSERT INTO cb_cards (id, pkg, scenario, source, created_by, note,
+                               model, trace_id, task_dir, fingerprint, params_json,
+                               state, opened_ms, opened_position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'open', ?12, ?13)
          ON CONFLICT (id) DO NOTHING",
         rusqlite::params![
             id,
@@ -408,6 +448,11 @@ fn opened(
             text(meta, "source"),
             text(meta, "created_by"),
             text(data, "note"),
+            text(meta, "model"),
+            text(meta, "trace_id"),
+            text(meta, "task_dir"),
+            text(meta, "fingerprint"),
+            params.map(Json::to_string),
             epoch_ms,
             position,
         ],
@@ -466,17 +511,27 @@ fn samples(
     Ok(())
 }
 
+/// One assessment of a card. `meta.source` says who made it — `code`, `llm_judge` or
+/// `human` — and is a column because "every human verdict on this pkg" is a question.
 fn eval(
     tx: &Transaction<'_>,
     id: &str,
     seq: i64,
     epoch_ms: i64,
+    meta: Option<&Json>,
     data: Option<&Json>,
 ) -> Result<()> {
     tx.execute(
-        "INSERT INTO cb_evals (card_id, seq, data_json, epoch_ms) VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO cb_evals (card_id, seq, source, data_json, epoch_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (card_id, seq) DO NOTHING",
-        rusqlite::params![id, seq, data.map(Json::to_string), epoch_ms],
+        rusqlite::params![
+            id,
+            seq,
+            text(meta, "source"),
+            data.map(Json::to_string),
+            epoch_ms
+        ],
     )
     .map_err(storage)?;
     tx.execute(
@@ -519,6 +574,41 @@ fn checkpoint(
     if let Some(hash) = blob {
         reference_blob(tx, &hash, size)?;
     }
+    Ok(())
+}
+
+/// A label on a card. Last write wins: the row is the current value, and what it replaced
+/// is on the stream. A `tag_set` without a key or a value is a write that went around
+/// `cards.tag`, and is reported rather than filed as a row with nothing in it.
+fn tag_set(tx: &Transaction<'_>, id: &str, epoch_ms: i64, meta: Option<&Json>) -> Result<()> {
+    let (Some(key), Some(value)) = (text(meta, "key"), text(meta, "value")) else {
+        return Err(Error::storage(format!(
+            "a tag_set on {STREAM_PREFIX}{id} carries no meta.key and meta.value"
+        )));
+    };
+    tx.execute(
+        "INSERT INTO cb_tags (card_id, key, value, set_ms) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (card_id, key) DO UPDATE SET value = excluded.value,
+                                                  set_ms = excluded.set_ms",
+        rusqlite::params![id, key, value, epoch_ms],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+
+/// The label is gone. Unsetting a key that was never set is nothing to do, not an error:
+/// the event says the card does not carry the key, and it does not.
+fn tag_unset(tx: &Transaction<'_>, id: &str, meta: Option<&Json>) -> Result<()> {
+    let Some(key) = text(meta, "key") else {
+        return Err(Error::storage(format!(
+            "a tag_unset on {STREAM_PREFIX}{id} carries no meta.key"
+        )));
+    };
+    tx.execute(
+        "DELETE FROM cb_tags WHERE card_id = ?1 AND key = ?2",
+        rusqlite::params![id, key],
+    )
+    .map_err(storage)?;
     Ok(())
 }
 
@@ -754,6 +844,7 @@ fn purge(tx: &Transaction<'_>, id: &str) -> Result<()> {
     for sql in [
         "DELETE FROM cb_samples WHERE card_id = ?1",
         "DELETE FROM cb_evals WHERE card_id = ?1",
+        "DELETE FROM cb_tags WHERE card_id = ?1",
         "DELETE FROM cb_checkpoints WHERE card_id = ?1",
         "DELETE FROM cb_lineage WHERE child = ?1 OR parent = ?1",
         "DELETE FROM cb_cards WHERE id = ?1",

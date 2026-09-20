@@ -42,6 +42,7 @@ local record store
    blob_get: function(self: store, hash: string): string, string
    blob_path: function(self: store, hash: string): string
    json_encode: function(self: store, v: any): string, string
+   digest: function(self: store, v: any): string
    json_decode: function(self: store, text: string): any, string
    export: function(self: store): ExportReport, string
    import: function(self: store, path: string): ImportReport, string

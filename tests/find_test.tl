@@ -105,6 +105,44 @@ t.describe("cards.build_find", function()
       t.expect(err):to_contain("DROP TABLE")
    end)
 
+   t.it("reaches into params and stats by a dotted path, and refuses one that could close the quote", function()
+      local sql, params = cards.build_find({
+         clauses = { clause("params.model.temperature", ">", 0.5), clause("stats.ev", ">=", 5) },
+         order_by = "stats.ev",
+      })
+      t.expect(sql):to_contain("WHERE json_extract(params_json, '$.model.temperature') > ?")
+      t.expect(sql):to_contain("AND json_extract(stats_json, '$.ev') >= ?")
+      t.expect(sql):to_contain("ORDER BY json_extract(stats_json, '$.ev') DESC")
+      t.expect(#params):to_equal(2)
+
+      for _, bad in ipairs({ "params.a'b", "params..a", "params.a.", "stats.", "params.a b" }) do
+         local refused, _, err = cards.build_find({ clauses = { clause(bad, "=", 1) } })
+         t.expect(refused):to_be_nil()
+         t.expect(err):to_contain("path")
+      end
+   end)
+
+   t.it("reads a tag by key, with the key bound before the value", function()
+      local sql, params = cards.build_find({
+         clauses = { clause("pkg", "=", "cot"), clause("tags.stage", "=", "prod") },
+         order_by = "tags.review.verdict",
+      })
+      t.expect(sql):to_contain("AND (SELECT value FROM cb_tags WHERE card_id = cb_cards.id AND key = ?) = ?")
+      t.expect(sql):to_contain("ORDER BY (SELECT value FROM cb_tags WHERE card_id = cb_cards.id AND key = ?) DESC")
+      t.expect(params[1] as string):to_equal("cot")
+      t.expect(params[2] as string):to_equal("stage")
+      t.expect(params[3] as string):to_equal("prod")
+      t.expect(params[4] as string):to_equal("review.verdict")
+
+      local refused, _, err = cards.build_find({ clauses = { clause("tags.a b", "=", 1) } })
+      t.expect(refused):to_be_nil()
+      t.expect(err):to_contain("tag key")
+
+      local unknown, _, uerr = cards.build_find({ clauses = { clause("cost.x", "=", 1) } })
+      t.expect(unknown):to_be_nil()
+      t.expect(uerr):to_contain("params.<path>")
+   end)
+
    t.it("clamps the limit at 500 and floors it at 1", function()
       t.expect((cards.build_find({ limit = 10000 }))):to_contain("LIMIT 500")
       t.expect((cards.build_find({ limit = 0 }))):to_contain("LIMIT 1")
