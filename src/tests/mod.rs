@@ -12,6 +12,7 @@
 mod alias;
 mod cards;
 mod cli;
+mod multi;
 mod prune;
 mod read_models;
 mod store;
