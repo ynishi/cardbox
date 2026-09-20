@@ -148,21 +148,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "cardbox"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "eventsdb",
- "hex",
- "htl",
- "mlua-batteries",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "cc"
 version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -968,6 +953,21 @@ checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
 dependencies = [
  "hashbrown 0.16.1",
  "thiserror",
+]
+
+[[package]]
+name = "runcard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "eventsdb",
+ "hex",
+ "htl",
+ "mlua-batteries",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
