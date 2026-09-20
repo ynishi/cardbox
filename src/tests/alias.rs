@@ -490,6 +490,99 @@ fn the_name_before_params_and_tags_is_carried_forward_too() -> anyhow::Result<()
     Ok(())
 }
 
+/// The tables of an older build, not only its cursor: `cb_cards` without the four
+/// identity columns and `params_json`, `cb_evals` without `source`, no `cb_tags`. That
+/// is what a `cards_v3` binary leaves on disk, and it is what the release before this
+/// one could not open — `CREATE TABLE IF NOT EXISTS` kept the old table and the
+/// `CREATE INDEX` on `model` failed. Now the tables are dropped and folded again.
+#[test]
+fn a_store_whose_tables_predate_this_shape_is_refolded_on_open() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    write_under_the_old_name(dir.path(), "cards_v3")?;
+    downgrade_the_tables(dir.path())?;
+
+    let h = Htl::new()?;
+    crate::preload(&h, dir.path())?;
+    let out: Vec<String> = eval(
+        &h,
+        r#"
+        local cards = require('cardbox').cards
+        local store = require('store')
+
+        local one = cards.get(store, 'mig_one')
+        assert(one.samples.rows == 2, 'folded again, counted once')
+        assert(one.stats.mean_score == 0.4, 'the close came back')
+        assert(#cards.list(store, {}) == 2, 'both cards')
+
+        local rec, err = cards.tag(store, 'mig_one', 'stage', 'prod')
+        assert(err == nil and rec ~= nil, tostring(err))
+        local cols = store:query('PRAGMA table_info(cb_cards)', {})
+        local names = {}
+        for i, c in ipairs(cols) do names[c.name] = true end
+        assert(names.params_json and names.model, 'this shape')
+
+        local out = {}
+        for i, entry in ipairs(cards.list(store, {})) do out[i] = entry.id end
+        return out
+        "#,
+    )?;
+    assert_eq!(out, ["mig_two", "mig_one"]);
+    Ok(())
+}
+
+/// The store the default root actually held: old-shape tables and nothing in the log.
+/// No cursor under any name, no events — and the open has to succeed all the same.
+#[test]
+fn an_empty_store_with_old_tables_opens_and_takes_a_card() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
+        let log = rt.block_on(SqliteEventLog::open(dir.path().join("cards.db")))?;
+        let mut runner = log.runner(CardsProjection::under("cards_v3"))?;
+        rt.block_on(runner.init())?;
+    }
+    downgrade_the_tables(dir.path())?;
+
+    let h = Htl::new()?;
+    crate::preload(&h, dir.path())?;
+    let state: String = eval(
+        &h,
+        r#"
+        local cards = require('cardbox').cards
+        local store = require('store')
+        assert(#cards.list(store, {}) == 0, 'nothing there')
+        local card, err = cards.open(store, {
+           pkg = 'cot', scenario = 'arith', source = 'eval', created_by = 'x', id = 'fresh',
+           params = { k = 1 },
+        })
+        assert(err == nil, tostring(err))
+        return cards.get(store, 'fresh').state
+        "#,
+    )?;
+    assert_eq!(state, "open");
+    Ok(())
+}
+
+/// Take a database this build wrote back to the `cards_v3` table shape, column by column.
+fn downgrade_the_tables(root: &Path) -> anyhow::Result<()> {
+    let conn = eventsdb::sqlite::rusqlite::Connection::open(root.join("cards.db"))?;
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS cb_cards_model;
+         DROP INDEX IF EXISTS cb_cards_trace;
+         DROP INDEX IF EXISTS cb_cards_print;
+         ALTER TABLE cb_cards DROP COLUMN model;
+         ALTER TABLE cb_cards DROP COLUMN trace_id;
+         ALTER TABLE cb_cards DROP COLUMN work_url;
+         ALTER TABLE cb_cards DROP COLUMN fingerprint;
+         ALTER TABLE cb_cards DROP COLUMN params_json;
+         ALTER TABLE cb_evals DROP COLUMN source;
+         DROP TABLE IF EXISTS cb_tags;",
+    )?;
+    Ok(())
+}
+
 /// Build a `cards.db` the way an earlier commit would have left one: the same events,
 /// folded by a runner whose checkpoint is under `name`.
 fn write_under_the_old_name(root: &Path, name: &str) -> anyhow::Result<()> {

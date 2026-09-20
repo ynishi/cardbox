@@ -150,10 +150,20 @@ impl Store {
         std::fs::create_dir_all(root.join("blobs"))?;
         let log = rt.block_on(SqliteEventLog::open(root.join("cards.db")))?;
         let mut cards = log.runner(CardsProjection::new())?;
+        // Asked before `init`, because `init` is where the answer changes: it drops the
+        // `cb_*` tables of an older shape and creates this one's, and what it cannot do
+        // from inside its transaction is fold the log back into them.
+        let outdated = Store::shape_outdated(&rt, &log)?;
         // `init` is idempotent and creates the tables. It runs on every open rather than
         // on the first one, because "the file exists" is not "the file has this version's
         // tables in it" — a store opened by an older build has the log and not the model.
         rt.block_on(cards.init())?;
+        // Whatever the cursors say. A shape change is a rename by convention, and then
+        // `carry_forward` would rebuild anyway; this is for the store where it was not,
+        // whose live cursor would otherwise stand at the head over empty tables.
+        if outdated {
+            rt.block_on(cards.rebuild())?;
+        }
         Store::carry_forward(&rt, &log, &mut cards)?;
         Ok(Store {
             log,
@@ -162,6 +172,22 @@ impl Store {
             command: Mutex::new(()),
             cards: Mutex::new(cards),
         })
+    }
+
+    /// Whether the `cb_*` tables on disk predate this build's shape — the same question
+    /// [`projection::shape_outdated`] answers inside `init`, asked through the read-only
+    /// hatch before `init` has run.
+    fn shape_outdated(rt: &tokio::runtime::Runtime, log: &SqliteEventLog) -> anyhow::Result<bool> {
+        for (table, column) in projection::SHAPE_MARKS {
+            let rows = rt.block_on(log.query(&projection::shape_probe(table), Vec::new()))?;
+            let has = rows
+                .iter()
+                .any(|r| r.get("name").and_then(Json::as_str) == Some(column));
+            if !rows.is_empty() && !has {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Bring a database written under a retired projection name up to this one.

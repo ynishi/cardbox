@@ -290,7 +290,18 @@ impl Projection for CardsProjection {
         )
     }
 
+    /// Create the tables — after dropping them, when the ones there predate this shape.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` leaves an existing table as it is, so a `cb_cards`
+    /// written by an older build has no `params_json`, and the `CREATE INDEX` on `model`
+    /// that follows would fail on every open — which is what `cardbox version` did on a
+    /// store a `cards_v3` build had created. The tables are a fold of the log and nothing
+    /// else, so an outdated one is dropped and folded again; [`crate::Store::open`] runs
+    /// the rebuild, having asked [`shape_outdated`] the same question before this ran.
     fn init(&mut self, tx: &Transaction<'_>) -> Result<()> {
+        if shape_outdated(tx)? {
+            tx.execute_batch(DROP).map_err(storage)?;
+        }
         tx.execute_batch(CREATE).map_err(storage)
     }
 
@@ -392,6 +403,37 @@ impl Projection for CardsProjection {
             ))),
         }
     }
+}
+
+/// One column per table that a build before this shape did not have. A table that
+/// exists without it was written by that build.
+///
+/// `cb_cards.params_json` arrived with `cards_v4`, and so did `cb_evals.source`; a table
+/// added whole (`cb_tags`) needs no entry, `CREATE TABLE IF NOT EXISTS` adds it.
+pub const SHAPE_MARKS: [(&str, &str); 2] = [("cb_cards", "params_json"), ("cb_evals", "source")];
+
+/// The SQL that asks whether `table` carries `column`, for the hatch and for `init`.
+pub fn shape_probe(table: &str) -> String {
+    format!("PRAGMA table_info({table})")
+}
+
+/// Whether the `cb_*` tables in this database predate [`SHAPE_MARKS`].
+///
+/// Read inside the transaction `init` runs in, so the drop that follows a `true` and the
+/// create after it are one change.
+pub fn shape_outdated(tx: &Transaction<'_>) -> Result<bool> {
+    for (table, column) in SHAPE_MARKS {
+        let mut stmt = tx.prepare(&shape_probe(table)).map_err(storage)?;
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(storage)?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(storage)?;
+        if !names.is_empty() && !names.iter().any(|n| n == column) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// `card-<id>` → `<id>`.
