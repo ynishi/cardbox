@@ -23,7 +23,8 @@ t.describe("cards.build_find", function()
       t.expect(err):to_be_nil()
       t.expect(sql):to_equal(
          "SELECT id, pkg, scenario, model, state, opened_ms, closed_ms, mean_score, n, pass_rate, "
-            .. "passed FROM cb_cards WHERE pkg = ? "
+            .. "passed, (SELECT json_group_object(key, value) FROM cb_tags WHERE card_id = cb_cards.id) "
+            .. "AS tags_json FROM cb_cards WHERE pkg = ? "
             .. "ORDER BY opened_ms DESC, opened_position DESC LIMIT 50 OFFSET 0"
       )
       t.expect(#params):to_equal(1)
@@ -120,6 +121,17 @@ t.describe("cards.build_find", function()
          t.expect(refused):to_be_nil()
          t.expect(err):to_contain("path")
       end
+   end)
+
+   t.it("carries every row's tags as one JSON object, built in the same statement", function()
+      -- The tags are a correlated subquery in the SELECT list and not a second query, so
+      -- the row and its tags are the same instant of the store; and the subquery takes no
+      -- parameter, so a query with no clauses still binds nothing.
+      local sql, params = cards.build_find({})
+      t.expect(sql):to_contain(
+         "passed, (SELECT json_group_object(key, value) FROM cb_tags WHERE card_id = cb_cards.id) AS tags_json"
+      )
+      t.expect(#params):to_equal(0)
    end)
 
    t.it("reads a tag by key, with the key bound before the value", function()

@@ -26,12 +26,18 @@ local json = require("std.json")
 
 local record find
    -- What a card looks like in a list. The ten columns a reader scans before deciding
-   -- which card to open — not the card, which is `cards.get`.
+   -- which card to open, and the card's current tags — not the card, which is `cards.get`.
    --
    -- All four of the flattened close numbers are here, `passed` included, because they
    -- are also what a promotion ranks by: `cards.promote` chooses its winner out of a list
    -- of these, so a metric a summary did not carry would be a metric nothing could be
    -- ranked by (`cardbox.alias`, `METRICS`).
+   --
+   -- `tags` is here because a query can select and order by `tags.<key>`, and a row that
+   -- did not carry the value it was chosen by would send the reader back to `get` for
+   -- every row of the page. It is the same `cb_tags` read `get` does, folded into the
+   -- listing's own query (`SUMMARY` below), so a listing costs one statement whatever the
+   -- page size. A card with no tags carries `{}`.
    record CardSummary
       id: string
       pkg: string
@@ -44,6 +50,7 @@ local record find
       n: integer
       pass_rate: number
       passed: integer
+      tags: {string:string}
    end
 
    record ListOpts
@@ -210,8 +217,14 @@ local MAX_LIMIT = 500
 local DEFAULT_DEPTH = 3
 local MAX_DEPTH = 10
 
+-- The tags travel as one JSON object per row, built by SQLite in a correlated subquery
+-- (`json_group_object`, from the same JSON1 that `json_extract` is), so the whole listing is
+-- still one statement and the row it answers is the row `find` selected — a second query
+-- for the tags could see a tag set between the two. `row_summary` decodes it.
+local TAGS_JSON = "(SELECT json_group_object(key, value) FROM cb_tags WHERE card_id = cb_cards.id)"
+
 local SUMMARY = "SELECT id, pkg, scenario, model, state, opened_ms, closed_ms, mean_score, n, "
-   .. "pass_rate, passed FROM cb_cards"
+   .. "pass_rate, passed, " .. TAGS_JSON .. " AS tags_json FROM cb_cards"
 
 -- The tiebreaker every ordering ends with. `opened_ms` is a millisecond clock and two
 -- cards opened in the same millisecond would otherwise come back in whatever order SQLite
@@ -233,7 +246,18 @@ local function clamp(v: any, fallback: integer, low: integer, high: integer): in
    return n
 end
 
-local function row_summary(row: {string:any}): find.CardSummary
+--- One row, with its `tags_json` decoded. A row with no tags is a JSON `{}` — an
+--- aggregate over no rows — and, defensively, so is a NULL: a summary always has a
+--- `tags` table, so a reader may index it without a nil check.
+local function row_summary(s: store, row: {string:any}): find.CardSummary, string
+   local tags: {string:string} = {}
+   if row.tags_json ~= nil then
+      local decoded, derr = s:json_decode(row.tags_json as string)
+      if decoded == nil then
+         return nil, derr
+      end
+      tags = decoded as {string:string}
+   end
    return {
       id = row.id as string,
       pkg = row.pkg as string,
@@ -246,6 +270,7 @@ local function row_summary(row: {string:any}): find.CardSummary
       n = row.n as integer,
       pass_rate = row.pass_rate as number,
       passed = row.passed as integer,
+      tags = tags,
    }
 end
 
@@ -263,10 +288,16 @@ local function as_list<T>(t: {T}): {T}
    return t
 end
 
-local function summaries(rows: {any}): {find.CardSummary}
-   return as_list(list.map(rows, function(r: any): find.CardSummary
-      return row_summary(r as {string:any})
-   end))
+local function summaries(s: store, rows: {any}): {find.CardSummary}, string
+   local out: {find.CardSummary} = {}
+   for i = 1, #rows do
+      local summary, err = row_summary(s, rows[i] as {string:any})
+      if summary == nil then
+         return nil, err
+      end
+      out[i] = summary
+   end
+   return as_list(out)
 end
 
 -- `LIMIT` and `OFFSET` are written into the text rather than bound, and that is not an
@@ -380,7 +411,7 @@ function find.find(s: store, q: find.Query): {find.CardSummary}, string
    if rows == nil then
       return nil, qerr
    end
-   return summaries(rows)
+   return summaries(s, rows)
 end
 
 --- The cards, newest first, optionally narrowed to one pkg or one state.
@@ -416,7 +447,7 @@ function find.list(s: store, opts: find.ListOpts): {find.CardSummary}, string
    if rows == nil then
       return nil, err
    end
-   return summaries(rows)
+   return summaries(s, rows)
 end
 
 -- One step of the walk, in whichever direction. `cb_lineage` is `(child, parent)`, so

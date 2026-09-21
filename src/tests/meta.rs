@@ -199,6 +199,18 @@ fn a_tag_moves_and_the_fold_and_the_table_agree() -> anyhow::Result<()> {
 
         local found = cards.find(store, { clauses = { { column = 'tags.stage', op = '=', value = 'prod' } } })
         assert(#found == 1 and found[1].id == 't1', 'found by tag')
+        -- The row carries what it was found by, and the rest of its tags, without a `get`.
+        assert(found[1].tags.stage == 'prod' and found[1].tags['review.verdict'] == 'ship',
+           'the listing row carries the tags')
+        local ordered = cards.find(store, { order_by = 'tags.stage', desc = false })
+        assert(#ordered == 2 and ordered[1].tags.stage == 'prod' and ordered[2].tags.stage == 'staging',
+           'ordered by a tag, and each row shows the value it was ordered by')
+        cards.open(store, { pkg = 'cot', scenario = 'arith', source = 'eval', created_by = 'x', id = 't3' })
+        local bare = cards.find(store, { clauses = { { column = 'id', op = '=', value = 't3' } } })
+        assert(type(bare[1].tags) == 'table' and next(bare[1].tags) == nil, 'no tags is an empty table')
+        assert(store:json_encode(bare[1]):find('"tags":{}', 1, true), 'and it encodes as {}')
+        local listed = cards.list(store, { pkg = 'cot' })
+        assert(#listed == 3 and listed[3].tags.stage == 'prod', 'list carries them too')
         local none = cards.find(store, { clauses = { { column = 'tags.stage', op = '=', value = 'dev' } } })
         assert(#none == 0, 'not found by a value nobody has')
 

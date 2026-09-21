@@ -143,9 +143,12 @@ assert "the card carries the tag and two evals" "$($CARDBOX get "$PARENT")" \
    '.tags.stage == "prod" and .evals == 2'
 assert "find by params and by tag" \
    "$($CARDBOX find --where 'params.variant = b' --where 'tags.stage = prod' --where 'model = demo-model')" \
-   --arg p "$PARENT" 'length == 1 and .[0].id == $p'
+   --arg p "$PARENT" 'length == 1 and .[0].id == $p and .[0].tags.stage == "prod"'
+assert "find ordered by a tag shows the value on every row" \
+   "$($CARDBOX find --where 'pkg = demo' --order-by tags.stage)" \
+   --arg p "$PARENT" 'length == 2 and .[0].id == $p and .[0].tags.stage == "prod" and .[1].tags == {}'
 assert "tag unset" "$($CARDBOX tag unset "$PARENT" stage)" '.changed == true'
-ok "closed card: a human eval, a tag set once, found by params.variant and tags.stage, tag unset"
+ok "closed card: a human eval, a tag set once, found by params.variant and tags.stage with the tag on the row, tag unset"
 
 # ------------------------------------------------------------------ alc's surface
 
@@ -154,7 +157,7 @@ assert "rows, filtered by a v0 where and paged" \
    'length == 2 and all(.score == 1)'
 assert "compat find with alc's own arguments" \
    "$($CARDBOX compat find --pkg demo --where '{"model": {"id": "demo-model"}, "stats": {"pass_rate": {"gte": 0.5}}}' --order-by=-stats.pass_rate)" \
-   --arg p "$PARENT" 'length == 1 and .[0].card_id == $p and .[0].model == "demo-model"'
+   --arg p "$PARENT" 'length == 1 and .[0].card_id == $p and .[0].model == "demo-model" and (.[0].tags | type) == "object"'
 ok "alc's surface: rows with a row where, compat find with model.id and stats.pass_rate"
 
 # ------------------------------------------------------------------ alias

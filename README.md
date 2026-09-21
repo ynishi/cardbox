@@ -92,7 +92,10 @@ in a tag. A key that turns out to be asked on every query is promoted to a colum
 or `tags.<key>` (the card's current value for that key). The path is validated to
 `[A-Za-z0-9_.]` before it reaches the SQL text and the key is bound, never written. A path
 that turns out to be asked on every query is promoted to a column, under a new projection
-name, the way `mean_score` was.
+name, the way `mean_score` was. Every row `find` and `list` answer with carries the card's
+current tags as `tags`, gathered in the same statement, so a listing filtered or ordered by
+a tag shows the value it was chosen by without a `get` per row; a card with no tags carries
+`{}`. `params` and `stats` stay on `get`, where they come back whole.
 
 ```lua
 cards.open(store, { pkg = "cot", scenario = "arith", source = "eval", created_by = "me",
@@ -164,7 +167,8 @@ room. The rest of the reads are `cards.get_by_alias`, `cards.alias_list` and
 and `alc_card_samples` took, translated. `compat.find` takes `{ pkg, where, order_by,
 limit, offset }` — the nested-object `where` (`{ model = { id = "m" }, stats = { pass_rate
 = { gte = 0.5 } } }`), `-path` for descending — and answers v0 summary rows (`card_id`,
-`pkg`, `scenario`, `model`, `pass_rate`, …) out of `cards.find`. `compat.translate` is the
+`pkg`, `scenario`, `model`, `pass_rate`, …, and the card's current `tags`) out of
+`cards.find`. `compat.translate` is the
 pure half, and says what maps where: `model.id` is `model`, `metadata.trace_id` is
 `trace_id`, `metadata.group` is `tags.group`, a section a pkg added on its own is
 `params.<section>`, `stats.` / `params.` / `tags.` pass through. What `cards.find` cannot
@@ -257,7 +261,7 @@ adapter later is another client of the same API rather than a second implementat
 | `tag set <id> <key> <value>` / `tag unset <id> <key>` | a label on a card, open or closed; `changed` says whether anything was written |
 | `get <id>` | the card as it reads now |
 | `list [--pkg P] [--state S] [--limit N] [--offset N]` | the last cards, newest first |
-| `find --where 'col op value' [--where ...] [--order-by col] [--asc] [--limit N] [--offset N]` | one clause per `--where`, ANDed; `col` is a column, `params.<path>`, `stats.<path>` or `tags.<key>` |
+| `find --where 'col op value' [--where ...] [--order-by col] [--asc] [--limit N] [--offset N]` | one clause per `--where`, ANDed; `col` is a column, `params.<path>`, `stats.<path>` or `tags.<key>`; every row carries its `tags` |
 | `rows <id> [--where JSON] [--limit N] [--offset N]` | the sample rows, those a v0-style `where` keeps, paged after the filter |
 | `compat find [--pkg P] [--where JSON] [--order-by=[-]path] [--limit N] [--offset N]` | `alc_card_find`'s arguments and answer, over cardbox; a descending key starts with `-`, so it is written `--order-by=-stats.ev` |
 | `lineage <id> [--depth N]` | parents, children, and the walk either way |

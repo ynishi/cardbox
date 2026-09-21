@@ -6,7 +6,7 @@
 use super::{eval, opened};
 
 /// The arguments the two real callers pass (`pkg` + `limit`, and a nested `where`), and
-/// the summary shape they read (`card_id`, `pkg`, `model`, `pass_rate`).
+/// the summary shape they read (`card_id`, `pkg`, `model`, `pass_rate`, and `tags`).
 #[test]
 fn compat_find_answers_v0_summaries_out_of_a_cardbox_query() -> anyhow::Result<()> {
     let (_dir, h) = opened()?;
@@ -52,6 +52,8 @@ fn compat_find_answers_v0_summaries_out_of_a_cardbox_query() -> anyhow::Result<(
 
         local tagged = compat.find(store, { ['where'] = { metadata = { group = 'run' } } })
         assert(#tagged == 1 and tagged[1].card_id == 'c2', 'metadata.group is tags.group')
+        assert(tagged[1].tags.group == 'run', 'and the row carries the tag it was found by')
+        assert(next(all[3].tags) == nil, 'a card with no tags carries an empty table')
 
         local by_model = compat.find(store, { ['where'] = { model = { id = 'm-a' } }, order_by = 'card_id' })
         assert(#by_model == 2 and by_model[1].card_id == 'c1', 'model.id is the model column')

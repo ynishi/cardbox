@@ -34,7 +34,9 @@ local record compat
       offset: integer
    end
 
-   -- One row of what it answers with: v0's summary shape, out of cardbox's.
+   -- One row of what it answers with: v0's summary shape, out of cardbox's, plus the
+   -- card's current tags — the slot v0's `metadata.group` / `plugin` / `run_status`
+   -- landed in, so a caller who filtered on one of those reads the value back on the row.
    record Summary
       card_id: string
       pkg: string
@@ -46,6 +48,7 @@ local record compat
       mean_score: number
       n: integer
       pass_rate: number
+      tags: {string:string}
    end
 
    -- What `alc_card_samples` takes beyond the id. `filter` for the reason above, and the
@@ -317,6 +320,7 @@ local function summary_of(row: reads.CardSummary): compat.Summary
       mean_score = row.mean_score,
       n = row.n,
       pass_rate = row.pass_rate,
+      tags = row.tags,
    }
 end
 
