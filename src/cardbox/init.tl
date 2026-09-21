@@ -32,7 +32,7 @@ cardbox.prune = require("cardbox.prune")
 cardbox.compat = require("cardbox.compat")
 
 function cardbox.version(): string
-   return "0.1.1"
+   return "0.1.2"
 end
 
 return cardbox
