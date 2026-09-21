@@ -14,10 +14,17 @@ One v0 card becomes:
 Aliases from _aliases.toml whose card exists are set afterwards.
 Every refusal is logged and the run continues; the run is idempotent per card id.
 
-v0's `model.id` held two different things: an LLM's id (`claude-opus-4-6`) and, far more
-often, the name of the flow that ran (`my_orch`, `my_flow`). Only the first is a
-model. An id that is not one goes to the tag `flow`, with the original spelling kept under
-`v0.model_id`, and the card's `model` is left unset rather than filled with a placeholder.
+v0's `model.id` held two different things: an LLM's id (`claude-opus-4-6`,
+`Qwen/Qwen2.5-7B-Instruct`) and, far more often, the name of the flow that ran (`my_orch`,
+`my_flow`). Only the first is a model. An id that is not one goes to the tag `flow`, with
+the original spelling kept under `v0.model_id`, and the card's `model` is left unset rather
+than filled with a placeholder.
+
+What tells the two apart (`is_llm_id`): an id with a `/` in it is a Hugging Face repo id,
+`<org>/<model>`, and is a model whatever the org is called; a bare id is a model when it
+starts with one of `LLM_PREFIXES`. Everything else falls through to `flow` — so a flow
+name never carries a `/`, and a bare model id whose family is not in the prefix list
+(a new vendor, a new naming scheme) is the case that list has to be extended for.
 """
 import json, os, re, subprocess, sys, tomllib, tempfile, time, collections
 
@@ -27,13 +34,22 @@ LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else None
 NAME = re.compile(r"^[A-Za-z0-9_\-]+$")
 ENV = dict(os.environ, CARDBOX_ROOT=ROOT)
 
-# What an LLM's id starts with. Anything else in v0's `model.id` is a flow name.
+# What a bare LLM id starts with. A namespaced id (`org/model`) is a model by its shape
+# and does not go through this list; a bare id that starts with none of these is a flow
+# name. The list is a closed set that ages with the model landscape: a new family is a
+# new entry here.
 LLM_PREFIXES = ("claude-", "gpt-", "o1", "o3", "o4", "gemini-", "qwen", "llama", "mistral",
                 "mixtral", "deepseek", "sonnet", "opus", "haiku", "phi-", "gemma")
 
 
 def is_llm_id(v):
-    return isinstance(v, str) and v.lower().startswith(LLM_PREFIXES)
+    if not isinstance(v, str):
+        return False
+    # `org/model` — a Hugging Face repo id. The org is a quantizer, a fine-tuner or a lab
+    # as often as it is a vendor, so the prefix list would misread most of these as flows.
+    if "/" in v:
+        return True
+    return v.lower().startswith(LLM_PREFIXES)
 
 # v0 top-level tables, by which slot they belong to.
 HOST_FIXED = {"card_id", "created_at", "created_by", "schema_version", "pkg", "scenario",
