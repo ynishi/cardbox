@@ -56,7 +56,9 @@ close were *written*, the event's own `epoch_ms`, and nothing a writer can set.
 The two are one number for a card opened as its run starts, and they part whenever a card
 is written after the fact: an import, a backfill, a run that opened its card late. A
 listing is newest *run* first (`ORDER BY started_ms DESC`), so a card imported today from a
-run in April sits with April. An `ended_ms` before the card's start is refused. The CLI
+run in April sits with April; a prune's `older_than_ms` is the run's age and a promotion's
+tie goes to the run that started last, on the same clock. An `ended_ms` before the card's
+start is refused. The CLI
 takes either spelling, `--started-at 1790029396788` or `--started-at 2026-04-11T18:12:36Z`
 (ISO 8601 in UTC; an offset other than zero is refused rather than converted).
 

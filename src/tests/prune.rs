@@ -430,3 +430,31 @@ fn a_second_export_with_nothing_new_writes_no_file() -> anyhow::Result<()> {
     assert_eq!(files.len(), 1, "one call, one file");
     Ok(())
 }
+
+/// `older_than_ms` is the run's age: a run from years ago written a moment ago is old, and
+/// one that started now is not, whatever order the two were written in.
+#[test]
+fn older_than_is_the_run_s_age_and_not_the_write_s() -> anyhow::Result<()> {
+    let (_dir, h) = opened()?;
+    let selected: Vec<String> = eval(
+        &h,
+        r#"
+        local cards = require('cardbox').cards
+        local store = require('store')
+        assert(cards.open(store, { pkg = 'aged', scenario = 'a', source = 'eval',
+           created_by = 'x', id = 'fresh' }))
+        assert(cards.close(store, 'fresh', { ok = true }))
+        assert(cards.open(store, { pkg = 'aged', scenario = 'a', source = 'import',
+           created_by = 'x', id = 'imported', started_ms = cards.utc_ms('2020-01-01T00:00:00Z') }))
+        assert(cards.close(store, 'imported', { ok = true }))
+
+        local report, err = cards.prune(store, {
+           pkg = 'aged', older_than_ms = 24 * 3600 * 1000, reason = 'a day old', dry_run = true,
+        })
+        assert(err == nil, tostring(err))
+        return report.selected
+        "#,
+    )?;
+    assert_eq!(selected, ["imported"]);
+    Ok(())
+}

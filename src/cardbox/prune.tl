@@ -269,10 +269,11 @@ local function candidates(s: store, spec: prune.PruneSpec): {reads.CardSummary},
       clauses[#clauses + 1] = { column = "pkg", op = "like", value = spec.pkg_like }
    end
    if spec.older_than_ms ~= nil then
-      -- `std.time.millis()` is the clock `opened_ms` is on. A cutoff computed here rather
+      -- The run's age, not the write's: `started_ms`, so a run from April imported today is
+      -- April's. `std.time.millis()` is the clock it is on. A cutoff computed here rather
       -- than in SQL is what keeps the whole selection one `find` with bound parameters.
       local cutoff = time.millis() - math.floor(spec.older_than_ms as number)
-      clauses[#clauses + 1] = { column = "opened_ms", op = "<", value = cutoff }
+      clauses[#clauses + 1] = { column = "started_ms", op = "<", value = cutoff }
    end
    if spec.states ~= nil then
       clauses[#clauses + 1] = { column = "state", op = "in", value = spec.states }
@@ -283,7 +284,7 @@ local function candidates(s: store, spec: prune.PruneSpec): {reads.CardSummary},
    while true do
       local page, err = reads.find(s, {
          clauses = clauses,
-         order_by = "opened_ms",
+         order_by = "started_ms",
          desc = false,
          limit = PAGE,
          offset = offset,

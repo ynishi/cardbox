@@ -317,15 +317,16 @@ function aliases.pick_best(candidates: {reads.CardSummary}, metric: string, min_
       return metric_of(card, metric) ~= nil and (card.n or 0) >= floor
    end)
 
-   -- Highest metric, ties to the card opened last — one `<` rather than `max_by` on the
+   -- Highest metric, ties to the run that started last — one `<` rather than `max_by` on the
    -- metric, because the tiebreak is part of the order and not a second pass over the
-   -- cards that drew.
+   -- cards that drew. The run's start and not the log's: a run imported after a newer one
+   -- is still the older run. A summary built by hand without it falls back to `opened_ms`.
    return list.max(eligible, function(a: reads.CardSummary, b: reads.CardSummary): boolean
       local av, bv = metric_of(a, metric), metric_of(b, metric)
       if av ~= bv then
          return av < bv
       end
-      return (a.opened_ms or 0) < (b.opened_ms or 0)
+      return (a.started_ms or a.opened_ms or 0) < (b.started_ms or b.opened_ms or 0)
    end)
 end
 

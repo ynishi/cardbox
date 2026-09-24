@@ -24,6 +24,7 @@ local function card(id: string, over: find.CardSummary): find.CardSummary
       pkg = over.pkg or "cot",
       scenario = over.scenario or "arith",
       state = "closed_ok",
+      started_ms = over.started_ms,
       opened_ms = over.opened_ms or 1000,
       closed_ms = over.closed_ms,
       mean_score = over.mean_score,
@@ -135,6 +136,14 @@ t.describe("cards.pick_best", function()
          card("oldest", { mean_score = 0.8, opened_ms = 500 }),
       }, "mean_score", 1)
       t.expect(best.id):to_equal("newer")
+   end)
+
+   t.it("gives a tie to the run that started last, not the card written last", function()
+      local best = cards.pick_best({
+         card("imported", { mean_score = 0.8, started_ms = 100, opened_ms = 9000 }),
+         card("recent", { mean_score = 0.8, started_ms = 5000, opened_ms = 5000 }),
+      }, "mean_score", 1)
+      t.expect(best.id):to_equal("recent")
    end)
 
    t.it("passes over a card under min_n, however well it scored", function()
