@@ -25,7 +25,7 @@
 //! missing afterwards exists somewhere else", and a history with a hole in it cannot make
 //! that claim. So [`Store::export`] pages the whole log with [`Filter::all`] from the end
 //! of the chain to the end of the log, which makes `<root>/export/` an append-only JSONL
-//! backup that grows by one file per call — the thing the design asked for, reached by
+//! backup that grows by one file per call — the backup a prune leans on, reached by
 //! doing the only thing the guard accepts.
 //!
 //! # Where the cursor comes from

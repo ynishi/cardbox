@@ -7,6 +7,6 @@ local cardbox = require("cardbox")
 
 t.describe("cardbox", function()
    t.it("says which version it is", function()
-      t.expect(cardbox.version()):to_equal("0.1.2")
+      t.expect(cardbox.version()):to_equal("0.1.3")
    end)
 end)

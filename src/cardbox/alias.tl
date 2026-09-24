@@ -4,7 +4,7 @@
 -- can be talked around from here. What is on this side is everything that is only a
 -- decision.
 --
--- The model, from the design: an alias is a human name for exactly one card, a card may
+-- The model: an alias is a human name for exactly one card, a card may
 -- carry several, and the names are global rather than per pkg — `champion` means one
 -- thing in this store. The name's whole life is the stream `alias-<name>`:
 -- `alias_bound` / `alias_released` in order, the current binding being the fold of them.
@@ -332,7 +332,7 @@ end
 
 --- Put a name on the best card a pkg has closed successfully.
 ---
---- The 昇格規則 of the design, and the reason the alias is a name rather than a state on
+--- The promotion rule, and the reason the alias is a name rather than a state on
 --- the card: promotion moves a pointer, so nothing about the winner changes and the run
 --- that loses it is still exactly what it was. Rolling back is the same call with an id.
 ---
