@@ -34,9 +34,8 @@ t.describe("compat.column_of", function()
       t.expect((compat.column_of("persona"))):to_equal("params.persona")
    end)
 
-   t.it("refuses created_at and prior_card_id, saying what to ask instead", function()
-      local _, err = compat.column_of("created_at")
-      t.expect(err):to_contain("opened_ms")
+   t.it("reads created_at as the run's start, and refuses prior_card_id", function()
+      t.expect((compat.column_of("created_at"))):to_equal("started_ms")
       local _, lerr = compat.column_of("metadata.prior_card_id")
       t.expect(lerr):to_contain("lineage")
    end)
@@ -107,7 +106,7 @@ t.describe("compat.translate", function()
          { "_not", { _not = { pkg = "a" } } },
          { "nin", { pkg = { nin = { "a" } } } },
          { "exists", { model = { id = { exists = true } } } },
-         { "opened_ms", { created_at = { gt = "2026" } } },
+         { "ISO 8601", { created_at = { gt = "2026" } } },
          { "one key", { pkg = "a" } },
       }
       for i, case in ipairs(cases) do
@@ -119,6 +118,33 @@ t.describe("compat.translate", function()
          t.expect(q):to_be_nil()
          t.expect(err):to_contain(case[1])
       end
+   end)
+end)
+
+t.describe("compat.translate, created_at", function()
+   t.it("converts an ISO created_at to started_ms, alone, in a leaf and in a list", function()
+      local out = clauses_of({ filter = {
+         created_at = { gte = "2026-04-11T18:12:36Z", lt = 1790000000000 },
+      } })
+      t.expect(#out):to_equal(2)
+      t.expect(out[1]):to_equal("started_ms < 1790000000000")
+      t.expect(out[2]):to_equal("started_ms >= 1775931156000")
+      local eq = clauses_of({ filter = { created_at = "1970-01-02T00:00:00.5Z" } })
+      t.expect(eq[1]):to_equal("started_ms = 86400500")
+      local q, err = compat.translate({ filter = { created_at = { ["in"] = { "1970-01-01T00:00:01Z" } } } })
+      t.expect(err):to_be_nil()
+      local first = q.clauses[1]
+      assert(first ~= nil, "one clause")
+      t.expect((first.value as {integer})[1]):to_equal(1000)
+   end)
+
+   t.it("orders by created_at as started_ms, and refuses a text match on it", function()
+      local q = compat.translate({ order_by = "-created_at" })
+      t.expect(q.order_by):to_equal("started_ms")
+      t.expect(q.desc):to_equal(true)
+      local refused, err = compat.translate({ filter = { created_at = { starts_with = "2026" } } })
+      t.expect(refused):to_be_nil()
+      t.expect(err):to_contain("number")
    end)
 end)
 

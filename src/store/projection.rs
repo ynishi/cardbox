@@ -14,7 +14,7 @@
 //!
 //! # The name is the version
 //!
-//! [`CardsProjection::NAME`] is `cards_v4`, and the suffix is the migration convention
+//! [`CardsProjection::NAME`] is `cards_v5`, and the suffix is the migration convention
 //! rather than decoration: a projection's name **is** the primary key of its checkpoint,
 //! so a shape change old rows cannot be carried into is done by renaming the projection.
 //! The new name has no checkpoint, so it starts at the beginning of the log and folds all
@@ -26,7 +26,8 @@
 //! `cb_alias_log`; `cards_v2` was it without `cards_pruned`, so a database folded by that
 //! build holds rows for cards a journal event has since removed; `cards_v3` was it before
 //! a card carried `params`, a `model` and a run identity in `cb_cards`, a `source` on each
-//! eval, and tags in `cb_tags`. [`crate::Store::open`] carries a database written under
+//! eval, and tags in `cb_tags`; `cards_v4` was it before a card carried the run's own
+//! `started_ms` / `ended_ms` beside the log's `opened_ms` / `closed_ms`. [`crate::Store::open`] carries a database written under
 //! any retired name forward; what it does and what it cannot do is documented there.
 //!
 //! Where this departs from the textbook (Marten's "build the new model beside the old one
@@ -80,8 +81,8 @@ impl Default for CardsProjection {
 
 impl CardsProjection {
     /// The consumer name, and so the identity of the cursor. See the module doc for what
-    /// the `_v4` is for.
-    pub const NAME: &'static str = "cards_v4";
+    /// the `_v5` is for.
+    pub const NAME: &'static str = "cards_v5";
 
     /// The projection this build folds under.
     pub fn new() -> CardsProjection {
@@ -166,6 +167,8 @@ CREATE TABLE IF NOT EXISTS cb_cards (
     fingerprint      TEXT,
     params_json      TEXT,
     state            TEXT NOT NULL,
+    started_ms       INTEGER,
+    ended_ms         INTEGER,
     opened_ms        INTEGER,
     closed_ms        INTEGER,
     opened_position  INTEGER,
@@ -186,6 +189,7 @@ CREATE TABLE IF NOT EXISTS cb_cards (
 CREATE INDEX IF NOT EXISTS cb_cards_pkg       ON cb_cards (pkg);
 CREATE INDEX IF NOT EXISTS cb_cards_state     ON cb_cards (state);
 CREATE INDEX IF NOT EXISTS cb_cards_opened_ms ON cb_cards (opened_ms);
+CREATE INDEX IF NOT EXISTS cb_cards_started   ON cb_cards (started_ms);
 CREATE INDEX IF NOT EXISTS cb_cards_model     ON cb_cards (model);
 CREATE INDEX IF NOT EXISTS cb_cards_trace     ON cb_cards (trace_id);
 CREATE INDEX IF NOT EXISTS cb_cards_print     ON cb_cards (fingerprint);
@@ -408,9 +412,14 @@ impl Projection for CardsProjection {
 /// One column per table that a build before this shape did not have. A table that
 /// exists without it was written by that build.
 ///
-/// `cb_cards.params_json` arrived with `cards_v4`, and so did `cb_evals.source`; a table
-/// added whole (`cb_tags`) needs no entry, `CREATE TABLE IF NOT EXISTS` adds it.
-pub const SHAPE_MARKS: [(&str, &str); 2] = [("cb_cards", "params_json"), ("cb_evals", "source")];
+/// `cb_cards.params_json` arrived with `cards_v4`, and so did `cb_evals.source`;
+/// `cb_cards.started_ms` with `cards_v5`. A table added whole (`cb_tags`) needs no entry,
+/// `CREATE TABLE IF NOT EXISTS` adds it.
+pub const SHAPE_MARKS: [(&str, &str); 3] = [
+    ("cb_cards", "params_json"),
+    ("cb_evals", "source"),
+    ("cb_cards", "started_ms"),
+];
 
 /// The SQL that asks whether `table` carries `column`, for the hatch and for `init`.
 pub fn shape_probe(table: &str) -> String {
@@ -468,6 +477,10 @@ fn alias_name<'a>(stream: &'a str, kind: &str) -> Result<&'a str> {
 /// could produce a second. If one is there anyway, the first open stays the card's opening
 /// — the alternative is an error that would refuse every later read of the whole model,
 /// including the rebuild that would be the way out of it.
+///
+/// `started_ms` is the open's `meta.started_ms` when the writer gave one and the event's
+/// own `epoch_ms` when it did not — the run's time, which a card written after the fact
+/// (an import) carries, beside `opened_ms`, which is always the log's.
 fn opened(
     tx: &Transaction<'_>,
     id: &str,
@@ -480,8 +493,8 @@ fn opened(
     tx.execute(
         "INSERT INTO cb_cards (id, pkg, scenario, source, created_by, note,
                                model, trace_id, work_url, fingerprint, params_json,
-                               state, opened_ms, opened_position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'open', ?12, ?13)
+                               state, started_ms, opened_ms, opened_position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'open', ?12, ?13, ?14)
          ON CONFLICT (id) DO NOTHING",
         rusqlite::params![
             id,
@@ -495,6 +508,7 @@ fn opened(
             text(meta, "work_url"),
             text(meta, "fingerprint"),
             params.map(Json::to_string),
+            num(meta.and_then(|m| m.get("started_ms"))).unwrap_or(epoch_ms),
             epoch_ms,
             position,
         ],
@@ -655,7 +669,8 @@ fn tag_unset(tx: &Transaction<'_>, id: &str, meta: Option<&Json>) -> Result<()> 
 }
 
 /// How a card ends: the state, the JSON as written, and the handful of numbers flattened
-/// out of it so a filter can compare them.
+/// out of it so a filter can compare them. `ended_ms` is `started_ms`'s other end, the
+/// same way: the close's `meta.ended_ms`, else the event's `epoch_ms`.
 fn closed(
     tx: &Transaction<'_>,
     id: &str,
@@ -673,7 +688,7 @@ fn closed(
         "UPDATE cb_cards SET state = ?2, closed_ms = ?3, error = ?4,
                              stats_json = ?5, cost_json = ?6,
                              mean_score = ?7, n = ?8, pass_rate = ?9, passed = ?10,
-                             elapsed_ms = ?11, llm_calls = ?12
+                             elapsed_ms = ?11, llm_calls = ?12, ended_ms = ?13
          WHERE id = ?1",
         rusqlite::params![
             id,
@@ -688,6 +703,7 @@ fn closed(
             num(stats.and_then(|s| s.get("passed"))),
             num(cost.and_then(|c| c.get("elapsed_ms"))),
             num(cost.and_then(|c| c.get("llm_calls"))),
+            num(meta.and_then(|m| m.get("ended_ms"))).unwrap_or(epoch_ms),
         ],
     )
     .map_err(storage)?;

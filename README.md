@@ -47,6 +47,19 @@ row. An open's `params` are kept the same way (`params_json`, and `model` / `tra
 `work_url` / `fingerprint` as columns), and `cb_tags` holds the current value of every tag.
 `cb_blobs.refs` counts what points at each blob, and is what `store:blob_gc()` reads.
 
+## The run's time and the log's
+
+A card carries two clocks. `opened_ms` / `closed_ms` are the log's: when the open and the
+close were *written*, the event's own `epoch_ms`, and nothing a writer can set.
+`started_ms` / `ended_ms` are the run's: when it started and ended, given to `open` as
+`started_ms` and to `close` as `ended_ms` — or, left out, the same instant as the write.
+The two are one number for a card opened as its run starts, and they part whenever a card
+is written after the fact: an import, a backfill, a run that opened its card late. A
+listing is newest *run* first (`ORDER BY started_ms DESC`), so a card imported today from a
+run in April sits with April. An `ended_ms` before the card's start is refused. The CLI
+takes either spelling, `--started-at 1790029396788` or `--started-at 2026-04-11T18:12:36Z`
+(ISO 8601 in UTC; an offset other than zero is refused rather than converted).
+
 ## Params, assessments and tags
 
 Besides what a run produces, three things are said about it, and they are three slots
@@ -106,10 +119,11 @@ cards.find(store, { clauses = { { column = "params.variant", op = "=", value = "
                                 { column = "tags.stage", op = "=", value = "prod" } } })
 ```
 
-The projection is named `cards_v3`, and the suffix is the migration convention: a shape
+The projection is named `cards_v5`, and the suffix is the migration convention: a shape
 change old rows cannot be carried into is a rename, because a projection's name *is* the
 primary key of its checkpoint, so a new name starts with no cursor and folds the log from
-the beginning. `cards_v1` was this model before the aliases and `cards_v2` before the prune journal.
+the beginning. `cards_v1` was this model before the aliases, `cards_v2` before the prune journal,
+`cards_v3` before params and tags, and `cards_v4` before the run's own time.
 `Store::open` recognises a
 database whose cursor is under a retired name — the retired name has one, the live name has
 none — and rebuilds under the new one, which empties the `cb_*` tables first so that the
@@ -172,8 +186,9 @@ limit, offset }` — the nested-object `where` (`{ model = { id = "m" }, stats =
 pure half, and says what maps where: `model.id` is `model`, `metadata.trace_id` is
 `trace_id`, `metadata.group` is `tags.group`, a section a pkg added on its own is
 `params.<section>`, `stats.` / `params.` / `tags.` pass through. What `cards.find` cannot
-answer is refused by name rather than half-answered — `_or`, `_not`, `nin`, `exists`, and
-`created_at`, which is a string in v0 and `opened_ms` here.
+answer is refused by name rather than half-answered — `_or`, `_not`, `nin` and `exists`.
+v0's `created_at` is `started_ms`: a clause on it has its ISO strings converted to
+milliseconds, and every row carries `created_at` back as the ISO string of the run's start.
 
 `compat.samples` is the row side: `cards.samples` reads a card's rows back out of the
 inline batches and the blobs, and the same DSL — all of it this time, `_or` and `exists`
@@ -253,11 +268,11 @@ adapter later is another client of the same API rather than a second implementat
 
 | command | what it does |
 |---|---|
-| `open --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...] [--note N] [--id ID] [--params JSON] [--model M] [--trace-id T] [--work-url U]` | open a card at the start of a run; `--created-by` defaults to `cardbox <version>` |
+| `open --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...] [--note N] [--id ID] [--params JSON] [--model M] [--trace-id T] [--work-url U] [--started-at T]` | open a card at the start of a run; `--created-by` defaults to `cardbox <version>`, `--started-at` to now |
 | `samples <id> [--file rows.jsonl]` | one JSON object per line, from the file or from stdin |
 | `eval <id> --file eval.json [--source code\|llm_judge\|human]` | record one assessment; open or closed |
 | `checkpoint <id> --file weights.bin --format safetensors [--note N]` | save a checkpoint as a blob |
-| `close <id> [--ok \| --failed --error MSG] [--stats JSON] [--cost JSON]` | end the run, either way; `--ok` is the default |
+| `close <id> [--ok \| --failed --error MSG] [--stats JSON] [--cost JSON] [--ended-at T]` | end the run, either way; `--ok` is the default, `--ended-at` defaults to now |
 | `tag set <id> <key> <value>` / `tag unset <id> <key>` | a label on a card, open or closed; `changed` says whether anything was written |
 | `get <id>` | the card as it reads now |
 | `list [--pkg P] [--state S] [--limit N] [--offset N]` | the last cards, newest first |

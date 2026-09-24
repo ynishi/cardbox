@@ -26,7 +26,7 @@ use projection::{ALIAS_PREFIX, CardsProjection, STREAM_PREFIX};
 /// A database written by one of them holds every event; what it does not hold is a cursor
 /// this build's projection can use. See [`Store::carry_forward`] for what is done about
 /// that, and [`projection`]'s module doc for why the name is the version.
-const RETIRED: [&str; 3] = ["cards_v1", "cards_v2", "cards_v3"];
+const RETIRED: [&str; 4] = ["cards_v1", "cards_v2", "cards_v3", "cards_v4"];
 
 /// A Lua string, in and out, as bytes rather than as `&str`.
 ///

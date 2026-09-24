@@ -256,3 +256,55 @@ fn closing_twice_is_refused() -> anyhow::Result<()> {
     assert!(msgs[1].contains("no card was opened"), "{}", msgs[1]);
     Ok(())
 }
+
+/// A card written after its run: the run's own start and end, kept apart from when the open
+/// and the close were written. `get` and `fold` agree on both, a listing is in the order the
+/// runs happened rather than the order they were written, and an end before the start is
+/// refused.
+#[test]
+fn a_card_keeps_the_run_s_own_time_beside_the_log_s() -> anyhow::Result<()> {
+    let (_dir, h) = opened()?;
+    let out: Vec<String> = eval(
+        &h,
+        r#"
+        local cards = require('cardbox').cards
+        local compat = require('cardbox').compat
+        local store = require('store')
+        local april = cards.utc_ms('2026-04-11T18:12:36Z')
+
+        -- Written first, and its run is the later of the two.
+        local now_card = cards.open(store, { pkg = 'cot', scenario = 'a', source = 'eval',
+           created_by = 'x', id = 'now_run' })
+        assert(cards.close(store, 'now_run', { ok = true }))
+        local old, err = cards.open(store, { pkg = 'cot', scenario = 'a', source = 'import',
+           created_by = 'x', id = 'april_run', started_ms = april })
+        assert(err == nil, tostring(err))
+
+        local _, before = cards.close(store, 'april_run', { ok = true, ended_ms = april - 1 })
+        assert(before ~= nil and before:find('before card april_run started'), tostring(before))
+        assert(cards.close(store, 'april_run', { ok = true, ended_ms = april + 1500 }))
+
+        local read = cards.get(store, 'april_run')
+        local folded = cards.fold(store, 'april_run')
+        assert(read.started_ms == april and folded.started_ms == april, read.started_ms)
+        assert(read.ended_ms == april + 1500 and folded.ended_ms == april + 1500, read.ended_ms)
+        assert(read.opened_ms > read.started_ms, 'the log time is the write, not the run')
+
+        -- Left out, the run's time is the write's.
+        local fresh = cards.get(store, 'now_run')
+        assert(fresh.started_ms == fresh.opened_ms and fresh.ended_ms == fresh.closed_ms,
+           'defaults to the log time')
+
+        -- The v0 surface: created_at is the run's start, both ways.
+        local rows = compat.find(store, { ["where"] = { created_at = { lt = '2026-05-01T00:00:00Z' } } })
+        assert(#rows == 1 and rows[1].card_id == 'april_run', #rows)
+        assert(rows[1].created_at == '2026-04-11T18:12:36Z', rows[1].created_at)
+
+        local ids = {}
+        for i, row in ipairs(cards.list(store, {})) do ids[i] = row.id end
+        return ids
+        "#,
+    )?;
+    assert_eq!(out, ["now_run", "april_run"]);
+    Ok(())
+}

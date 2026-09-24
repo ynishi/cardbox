@@ -44,6 +44,8 @@ local record find
       scenario: string
       model: string
       state: string
+      started_ms: integer
+      ended_ms: integer
       opened_ms: integer
       closed_ms: integer
       mean_score: number
@@ -123,6 +125,8 @@ local COLUMN_NAMES = {
    "work_url",
    "fingerprint",
    "state",
+   "started_ms",
+   "ended_ms",
    "opened_ms",
    "closed_ms",
    "mean_score",
@@ -223,11 +227,12 @@ local MAX_DEPTH = 10
 -- for the tags could see a tag set between the two. `row_summary` decodes it.
 local TAGS_JSON = "(SELECT json_group_object(key, value) FROM cb_tags WHERE card_id = cb_cards.id)"
 
-local SUMMARY = "SELECT id, pkg, scenario, model, state, opened_ms, closed_ms, mean_score, n, "
+local SUMMARY = "SELECT id, pkg, scenario, model, state, started_ms, ended_ms, opened_ms, closed_ms, "
+   .. "mean_score, n, "
    .. "pass_rate, passed, " .. TAGS_JSON .. " AS tags_json FROM cb_cards"
 
--- The tiebreaker every ordering ends with. `opened_ms` is a millisecond clock and two
--- cards opened in the same millisecond would otherwise come back in whatever order SQLite
+-- The tiebreaker every ordering ends with. `started_ms` is a millisecond clock and two
+-- cards started in the same millisecond would otherwise come back in whatever order SQLite
 -- felt like; `opened_position` is the log's own global coordinate, which is unique and
 -- monotonic, so appending it makes every order total.
 local TIEBREAK = "opened_position DESC"
@@ -264,6 +269,8 @@ local function row_summary(s: store, row: {string:any}): find.CardSummary, strin
       scenario = row.scenario as string,
       model = row.model as string,
       state = row.state as string,
+      started_ms = row.started_ms as integer,
+      ended_ms = row.ended_ms as integer,
       opened_ms = row.opened_ms as integer,
       closed_ms = row.closed_ms as integer,
       mean_score = row.mean_score as number,
@@ -374,7 +381,9 @@ function find.build_find(q: find.Query): string, {any}, string
       sql = sql .. " WHERE " .. table.concat(parts, " AND ")
    end
 
-   local order = "opened_ms"
+   -- The run's start, not the log's: "newest" is the newest run, and a card imported today
+   -- from a run in April is April's.
+   local order = "started_ms"
    if q.order_by ~= nil then
       if type(q.order_by) ~= "string" then
          return nil, nil, "order_by names no column a card can be ordered by: got a " .. type(q.order_by)
@@ -441,7 +450,7 @@ function find.list(s: store, opts: find.ListOpts): {find.CardSummary}, string
    if #parts > 0 then
       sql = sql .. " WHERE " .. table.concat(parts, " AND ")
    end
-   sql = sql .. " ORDER BY opened_ms DESC, " .. TIEBREAK .. page(o.limit, o.offset)
+   sql = sql .. " ORDER BY started_ms DESC, " .. TIEBREAK .. page(o.limit, o.offset)
 
    local rows, err = s:query(sql, params)
    if rows == nil then

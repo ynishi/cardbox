@@ -129,6 +129,27 @@ function cli.integer(args: argparse.Result, key: string): integer
    return args.opts[key] as integer
 end
 
+--- The time given for `key` as milliseconds since the epoch, or nil when it was not given.
+---
+--- Two spellings, because the two writers of one are a script with a clock
+--- (`--started-at 1790029396788`) and a person or an importer with a date
+--- (`--started-at 2026-04-11T18:12:36Z`). Digits alone are milliseconds; anything else goes
+--- through `cards.utc_ms`, which is where a timestamp it cannot read is refused.
+function cli.time(args: argparse.Result, key: string): integer, string
+   local text = cli.value(args, key)
+   if text == nil then
+      return nil
+   end
+   if text:match("^%d+$") ~= nil then
+      return math.tointeger(tonumber(text))
+   end
+   local ms, err = cards.utc_ms(text)
+   if ms == nil then
+      return nil, "--" .. key:gsub("_", "-") .. ": " .. err
+   end
+   return ms
+end
+
 --- Whether the flag `key` was given. `--flag` is true and `--no-flag` is false.
 function cli.flag(args: argparse.Result, key: string): boolean
    return args.opts[key] == true
@@ -325,6 +346,7 @@ local OPEN = spec("open", {
    model = TEXT,
    trace_id = TEXT,
    work_url = TEXT,
+   started_at = TEXT,
 })
 
 local function cmd_open(s: store, argv: {string}): string, string
@@ -348,6 +370,10 @@ local function cmd_open(s: store, argv: {string}): string, string
       end
       params = v
    end
+   local started_ms, terr = cli.time(args, "started_at")
+   if terr ~= nil then
+      return nil, terr
+   end
    local card, err = cards.open(s, {
       pkg = cli.value(args, "pkg"),
       scenario = cli.value(args, "scenario"),
@@ -360,6 +386,7 @@ local function cmd_open(s: store, argv: {string}): string, string
       model = cli.value(args, "model"),
       trace_id = cli.value(args, "trace_id"),
       work_url = cli.value(args, "work_url"),
+      started_ms = started_ms,
    })
    if card == nil then
       return nil, err
@@ -534,7 +561,7 @@ end
 
 local CLOSE = spec(
    "close",
-   { error = TEXT, stats = TEXT, cost = TEXT, ok = FLAG, failed = FLAG },
+   { error = TEXT, stats = TEXT, cost = TEXT, ok = FLAG, failed = FLAG, ended_at = TEXT },
    { { name = "id", required = true } }
 )
 
@@ -552,6 +579,11 @@ local function cmd_close(s: store, argv: {string}): string, string
    -- disagree with itself: an ok close carrying an error, and a failed one without one.
    local outcome: cards.Outcome = { ok = not cli.flag(args, "failed") }
    outcome.error = cli.value(args, "error")
+   local ended_ms, terr = cli.time(args, "ended_at")
+   if terr ~= nil then
+      return nil, terr
+   end
+   outcome.ended_ms = ended_ms
 
    local stats = cli.value(args, "stats")
    if stats ~= nil then
@@ -960,11 +992,13 @@ local USAGE = table.concat({
    "A card's life:",
    "  open        --pkg P --scenario S --source SRC [--created-by X] [--parent ID ...]",
    "              [--note N] [--id ID] [--params JSON] [--model M] [--trace-id T]",
-   "              [--work-url file:///abs/dir | https://...]",
+   "              [--work-url file:///abs/dir | https://...] [--started-at T]",
    "  samples     <id> [--file rows.jsonl]    one JSON object per line; stdin without --file",
    "  eval        <id> --file eval.json [--source code|llm_judge|human]",
    "  checkpoint  <id> --file weights.bin --format safetensors [--note N]",
-   "  close       <id> [--ok | --failed --error MSG] [--stats JSON] [--cost JSON]",
+   "  close       <id> [--ok | --failed --error MSG] [--stats JSON] [--cost JSON] [--ended-at T]",
+   "              T is milliseconds since the epoch or ISO 8601 UTC (2026-04-11T18:12:36Z);",
+   "              left out, the run's time is the time the command runs",
    "",
    "Said about a card, open or closed:",
    "  tag set <id> <key> <value>              tag unset <id> <key>",

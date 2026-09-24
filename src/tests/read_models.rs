@@ -41,7 +41,8 @@ fn the_projection_says_what_the_fold_says() -> anyhow::Result<()> {
         assert(e2 == nil, tostring(e2))
 
         for _, f in ipairs({ 'id', 'pkg', 'scenario', 'source', 'created_by', 'note',
-                             'state', 'opened_ms', 'closed_ms', 'error' }) do
+                             'state', 'started_ms', 'ended_ms', 'opened_ms', 'closed_ms',
+                             'error' }) do
            assert(read[f] == folded[f],
               f .. ': ' .. tostring(read[f]) .. ' vs ' .. tostring(folded[f]))
         end

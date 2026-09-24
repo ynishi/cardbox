@@ -22,10 +22,11 @@ t.describe("cards.build_find", function()
       local sql, params, err = cards.build_find({ clauses = { clause("pkg", "=", "cot") } })
       t.expect(err):to_be_nil()
       t.expect(sql):to_equal(
-         "SELECT id, pkg, scenario, model, state, opened_ms, closed_ms, mean_score, n, pass_rate, "
+         "SELECT id, pkg, scenario, model, state, started_ms, ended_ms, opened_ms, closed_ms, "
+            .. "mean_score, n, pass_rate, "
             .. "passed, (SELECT json_group_object(key, value) FROM cb_tags WHERE card_id = cb_cards.id) "
             .. "AS tags_json FROM cb_cards WHERE pkg = ? "
-            .. "ORDER BY opened_ms DESC, opened_position DESC LIMIT 50 OFFSET 0"
+            .. "ORDER BY started_ms DESC, opened_position DESC LIMIT 50 OFFSET 0"
       )
       t.expect(#params):to_equal(1)
       t.expect(params[1]):to_equal("cot")
@@ -165,6 +166,6 @@ t.describe("cards.build_find", function()
       local sql, params, err = cards.build_find({})
       t.expect(err):to_be_nil()
       t.expect(#params):to_equal(0)
-      t.expect(sql):to_contain("FROM cb_cards ORDER BY opened_ms DESC")
+      t.expect(sql):to_contain("FROM cb_cards ORDER BY started_ms DESC")
    end)
 end)

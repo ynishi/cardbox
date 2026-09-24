@@ -193,6 +193,30 @@ assert "promote picked the best card" "$PROMOTED" --arg id "$PARENT" '.card_id =
 assert "promote bound the name" "$PROMOTED" '.changed == true and .metric == "mean_score"'
 ok "promote champion -> $(printf '%s' "$PROMOTED" | jq -r .card_id)"
 
+# ------------------------------------------------------------------ a card written late
+
+# A run from April, written now: its own start and end on the card, the write's time beside
+# them, and the listing in the order the runs happened.
+LATE="$($CARDBOX open --pkg late --scenario arith --source e2e \
+   --started-at 2026-04-11T18:12:36Z | jq -r .id)"
+set +e
+BACKWARDS="$($CARDBOX close "$LATE" --ended-at 2026-04-11T18:12:35Z 2>&1 >/dev/null)"
+STATUS=$?
+set -e
+test "$STATUS" -eq 1 || fail "a close before the start was taken (exit $STATUS)"
+case "$BACKWARDS" in
+   *"a run ends no earlier than it starts"*) ;;
+   *) fail "the backwards close was refused for something else: $BACKWARDS" ;;
+esac
+$CARDBOX close "$LATE" --ended-at 1775931157500 >/dev/null
+LATE_VIEW="$($CARDBOX get "$LATE")"
+assert "the late card keeps the run's time" "$LATE_VIEW" \
+   '.started_ms == 1775931156000 and .ended_ms == 1775931157500 and .opened_ms > .started_ms'
+assert "the late card is the oldest run" "$($CARDBOX list)" --arg id "$LATE" '.[-1].id == $id'
+assert "compat answers created_at as the run's start" \
+   "$($CARDBOX compat find --pkg late)" '.[0].created_at == "2026-04-11T18:12:36Z"'
+ok "a card written late: started 2026-04-11T18:12:36Z, listed last, a backwards close refused"
+
 # ------------------------------------------------------------------ debris
 
 DEBRIS="$($CARDBOX open --pkg _test_x --scenario arith --source e2e | jq -r .id)"

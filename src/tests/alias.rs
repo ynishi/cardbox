@@ -398,7 +398,7 @@ fn a_database_written_under_the_old_projection_name_is_carried_forward() -> anyh
            'SELECT consumer, position FROM checkpoints ORDER BY consumer', {})
         assert(e2 == nil, tostring(e2))
         assert(#marks == 2, #marks)
-        assert(marks[1].consumer == 'cards_v1' and marks[2].consumer == 'cards_v4', marks[2].consumer)
+        assert(marks[1].consumer == 'cards_v1' and marks[2].consumer == 'cards_v5', marks[2].consumer)
         assert(marks[1].position == marks[2].position, 'the retired cursor is not behind')
 
         local rec, e3 = cards.alias(store, 'champion', 'mig_two')
@@ -562,6 +562,44 @@ fn an_empty_store_with_old_tables_opens_and_takes_a_card() -> anyhow::Result<()>
         "#,
     )?;
     assert_eq!(state, "open");
+    Ok(())
+}
+
+/// `cards_v4` is the model before the run's own `started_ms` / `ended_ms`. Its tables lack
+/// the two columns, so the store is refolded on open, and what the old events carried
+/// comes back with the log's time standing in for the run's.
+#[test]
+fn the_name_before_the_run_s_own_time_is_carried_forward_too() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    write_under_the_old_name(dir.path(), "cards_v4")?;
+    {
+        let conn = eventsdb::sqlite::rusqlite::Connection::open(dir.path().join("cards.db"))?;
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS cb_cards_started;
+             ALTER TABLE cb_cards DROP COLUMN started_ms;
+             ALTER TABLE cb_cards DROP COLUMN ended_ms;",
+        )?;
+    }
+
+    let h = Htl::new()?;
+    crate::preload(&h, dir.path())?;
+    let out: Vec<String> = eval(
+        &h,
+        r#"
+        local cards = require('cardbox').cards
+        local store = require('store')
+
+        local one = cards.get(store, 'mig_one')
+        assert(one.samples.rows == 2, 'folded again, counted once')
+        assert(one.started_ms == one.opened_ms, 'no start of its own: the log time')
+        assert(one.ended_ms == one.closed_ms, 'no end of its own: the log time')
+
+        local out = {}
+        for i, entry in ipairs(cards.list(store, {})) do out[i] = entry.id end
+        return out
+        "#,
+    )?;
+    assert_eq!(out, ["mig_two", "mig_one"]);
     Ok(())
 }
 

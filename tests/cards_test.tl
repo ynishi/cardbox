@@ -22,6 +22,7 @@ local function spec(over: cards.OpenSpec): cards.OpenSpec
       parents = over.parents,
       note = over.note,
       id = over.id,
+      started_ms = over.started_ms,
    }
 end
 
@@ -54,6 +55,39 @@ t.describe("cards.open", function()
       local card, err = cards.open(stub, spec({ parents = { "ok_one", "not ok" } }))
       t.expect(card):to_be_nil()
       t.expect(err):to_contain("parents[2]")
+   end)
+end)
+
+t.describe("a run's time", function()
+   t.it("refuses a started_ms that is not a whole, non-negative millisecond count", function()
+      local _, text = cards.open(stub, spec({ started_ms = "2026-04-11" as integer }))
+      t.expect(text):to_contain("started_ms is milliseconds")
+      local _, negative = cards.open(stub, spec({ started_ms = -1 }))
+      t.expect(negative):to_contain("non-negative")
+      local _, fraction = cards.open(stub, spec({ started_ms = 1.5 as integer }))
+      t.expect(fraction):to_contain("whole")
+   end)
+
+   t.it("refuses an ended_ms that is not one either", function()
+      local _, err = cards.close(stub, "card_1", { ok = true, ended_ms = -5 })
+      t.expect(err):to_contain("ended_ms")
+   end)
+
+   t.it("reads ISO 8601 UTC, and nothing it would have to guess at", function()
+      t.expect((cards.utc_ms("1970-01-01T00:00:00Z"))):to_equal(0)
+      t.expect((cards.utc_ms("2026-04-11T18:12:36Z"))):to_equal(1775931156000)
+      t.expect((cards.utc_ms("2026-04-11T18:12:36.25+00:00"))):to_equal(1775931156250)
+      t.expect((cards.utc_ms("2000-02-29T12:00:00Z"))):to_equal(951825600000)
+      for _, bad in ipairs({ "2026-04-11", "2026-04-11T18:12:36+09:00", "2026-13-01T00:00:00Z", "now" }) do
+         local ms, err = cards.utc_ms(bad)
+         t.expect(ms):to_be_nil()
+         t.expect(err):to_contain("2026") -- every refusal shows the shape it wanted or what it got
+      end
+   end)
+
+   t.it("writes it back to the second", function()
+      t.expect(cards.utc_iso(1775931156250)):to_equal("2026-04-11T18:12:36Z")
+      t.expect(cards.utc_iso(0)):to_equal("1970-01-01T00:00:00Z")
    end)
 end)
 

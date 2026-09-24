@@ -10,6 +10,9 @@ One v0 card becomes:
   samples --file <jsonl>
   eval   per judge_* table (--source llm_judge), review / caveats (--source human)
   close  --ok --stats <[stats] + result-side metadata + extra/outputs> --cost <[cost]>
+         with --started-at / --ended-at both <created_at>: v0 wrote one time, once, when the
+         run was done (create was open and close in one), so it is the run's time at both
+         ends — and not the import's, which is what the card would say if it were left out
   tag    set for metadata.group / plugin / run_status, pkg.category, and the v0.* provenance
 Aliases from _aliases.toml whose card exists are set afterwards.
 Every refusal is logged and the run continues; the run is idempotent per card id.
@@ -157,6 +160,9 @@ def import_card(fp):
     body = d.get("description", {}).get("body")
     if body:
         args += ["--note", body]
+    created_at = d.get("created_at")
+    if isinstance(created_at, str) and created_at:
+        args += ["--started-at", created_at]
     trace = md.pop("trace_id", None)
     if isinstance(trace, str) and trace:
         args += ["--trace-id", trace]
@@ -213,6 +219,8 @@ def import_card(fp):
     args = ["close", cid, "--ok", "--stats", json.dumps(stats, default=str)]
     if "cost" in d:
         args += ["--cost", json.dumps(d["cost"], default=str)]
+    if isinstance(created_at, str) and created_at:
+        args += ["--ended-at", created_at]
     out, err = cb(*args)
     if err:
         note("close", cid, err)

@@ -11,9 +11,12 @@
 -- Two limits are stated rather than papered over. `cards.find` is AND-only, so a `where`
 -- holding `_or` or `_not` is refused with a sentence saying so, as are `nin` and `exists`,
 -- which the SQL builder has no operator for — a row-level `where` on samples has all of
--- them, because that one runs here over decoded rows. And v0's `created_at` is an ISO
--- string where cardbox's `opened_ms` is a number, so a clause on it is refused rather than
--- silently compared across types.
+-- them, because that one runs here over decoded rows.
+--
+-- v0's `created_at` is the run's time, and cardbox's is `started_ms`: an ISO string there,
+-- a millisecond count here. A clause on it has its values converted (`cards.utc_ms`) before
+-- it becomes a clause, so `{ created_at = { gte = "2026-04-01T00:00:00Z" } }` compares
+-- numbers with numbers, and every row carries `created_at` back as the ISO string.
 
 local type store = require("store")
 local type reads = require("cardbox.find")
@@ -43,6 +46,9 @@ local record compat
       scenario: string
       model: string
       state: string
+      created_at: string
+      started_ms: integer
+      ended_ms: integer
       opened_ms: integer
       closed_ms: integer
       mean_score: number
@@ -94,6 +100,9 @@ local FIXED: {string:string} = {
    ["model.id"] = "model",
    created_by = "created_by",
    state = "state",
+   created_at = "started_ms",
+   started_ms = "started_ms",
+   ended_ms = "ended_ms",
    opened_ms = "opened_ms",
    closed_ms = "closed_ms",
    mean_score = "mean_score",
@@ -120,10 +129,6 @@ local FIXED: {string:string} = {
 function compat.column_of(path: string): string, string
    if FIXED[path] ~= nil then
       return FIXED[path]
-   end
-   if path == "created_at" then
-      return nil, "created_at is an ISO string in v0 and opened_ms, a millisecond count, here: "
-         .. "compare opened_ms instead"
    end
    if path == "metadata.prior_card_id" then
       return nil, "metadata.prior_card_id is lineage here: ask cards.lineage rather than find"
@@ -173,6 +178,30 @@ local function predicate_of(t: any): any
    return m["where"]
 end
 
+-- A value as the column it is compared against holds it. Only `created_at` needs anything:
+-- v0 wrote it as an ISO string and `started_ms` is a millisecond count, so a string is
+-- converted (and a list of them, for `in`); a number is taken as milliseconds already.
+local function value_of(path: string, value: any): any, string
+   if path ~= "created_at" then
+      return value
+   end
+   if type(value) == "string" then
+      return cards.utc_ms(value as string)
+   end
+   if type(value) == "table" then
+      local out: {any} = {}
+      for i, v in ipairs(value as {any}) do
+         local converted, err = value_of(path, v)
+         if err ~= nil then
+            return nil, err
+         end
+         out[i] = converted
+      end
+      return out
+   end
+   return value
+end
+
 local function join(prefix: string, key: string): string
    if prefix == "" then
       return key
@@ -189,7 +218,14 @@ local function leaf_clauses(path: string, leaf: {string:any}, out: {reads.Clause
    end
    for op, value in pairs(leaf) do
       if OPS[op] ~= nil then
-         out[#out + 1] = { column = column, op = OPS[op], value = value }
+         local v, verr = value_of(path, value)
+         if verr ~= nil then
+            return path .. ": " .. verr
+         end
+         out[#out + 1] = { column = column, op = OPS[op], value = v }
+      elseif LIKE[op] and column == "started_ms" then
+         return op .. " on " .. path .. " compares text, and the time is a number here: "
+            .. "use gte / lt with an ISO timestamp"
       elseif LIKE[op] then
          if type(value) ~= "string" then
             return op .. " on " .. path .. " takes a string, got a " .. type(value)
@@ -216,7 +252,11 @@ local function walk(node: any, prefix: string, out: {reads.Clause}): string
       if column == nil then
          return cerr
       end
-      out[#out + 1] = { column = column, op = "=", value = node }
+      local v, verr = value_of(prefix, node)
+      if verr ~= nil then
+         return prefix .. ": " .. verr
+      end
+      out[#out + 1] = { column = column, op = "=", value = v }
       return nil
    end
    local t = node as {string:any}
@@ -309,12 +349,19 @@ function compat.translate(args: compat.FindArgs): reads.Query, string
 end
 
 local function summary_of(row: reads.CardSummary): compat.Summary
+   local created_at: string
+   if row.started_ms ~= nil then
+      created_at = cards.utc_iso(row.started_ms)
+   end
    return {
+      created_at = created_at,
       card_id = row.id,
       pkg = row.pkg,
       scenario = row.scenario,
       model = row.model,
       state = row.state,
+      started_ms = row.started_ms,
+      ended_ms = row.ended_ms,
       opened_ms = row.opened_ms,
       closed_ms = row.closed_ms,
       mean_score = row.mean_score,

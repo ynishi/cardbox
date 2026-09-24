@@ -70,6 +70,12 @@ local record cards
    -- A bare path is refused rather than given a `file://`, because the paths that arrive
    -- bare are the relative ones (`tasks/x`), and only the writer knows what
    -- they are relative to. Making the writer say so is what the scheme is for.
+   --
+   -- `started_ms` is when the run started, in milliseconds since the epoch, and it is the
+   -- run's time rather than the log's: the event keeps its own `epoch_ms`, which says when
+   -- the open was *written*, and the two differ whenever a card is written after the fact
+   -- — an import, a backfill, a run that opened its card late. Left out, it is the
+   -- write's own time, which is the same thing for a card opened as the run starts.
    record OpenSpec
       pkg: string
       scenario: string
@@ -82,6 +88,7 @@ local record cards
       model: string
       trace_id: string
       work_url: string
+      started_ms: integer
    end
 
    -- What `open` hands back: enough to write the rest of the card without reading it.
@@ -113,11 +120,15 @@ local record cards
    -- How a run ended. `error` is required when `ok` is false and refused when it is true:
    -- the two fields say one thing, and a card that disagrees with itself is worse than no
    -- card at all.
+   --
+   -- `ended_ms` is `started_ms`'s other end: when the run ended, the close's own write
+   -- time when left out, and refused when it is before the card's start.
    record Outcome
       ok: boolean
       stats: any
       cost: any
       error: string
+      ended_ms: integer
    end
 
    record Samples
@@ -153,6 +164,11 @@ local record cards
       fingerprint: string
       params: any
       state: string
+      -- When the run started and ended, as the writer said (`OpenSpec.started_ms`,
+      -- `Outcome.ended_ms`) or, when it did not, when the open and the close were
+      -- written. `opened_ms` / `closed_ms` are always the second: the log's time.
+      started_ms: integer
+      ended_ms: integer
       opened_ms: integer
       closed_ms: integer
       stats: any
@@ -233,6 +249,80 @@ local function required_name(v: any, field: string): string, string
       return nil, field .. " may hold only letters, digits, _ and -, got " .. string.format("%q", s)
    end
    return s
+end
+
+-- A run's time, when the caller gave one: a whole, non-negative count of milliseconds
+-- since the epoch. A float that is whole is taken, because JSON has one number type and a
+-- decoder is free to hand `1790000000000` back as either.
+local function optional_ms(v: any, field: string): integer, string
+   if v == nil then
+      return nil
+   end
+   if type(v) ~= "number" then
+      return nil, field .. " is milliseconds since the epoch, got a " .. type(v)
+   end
+   local n = math.tointeger(v as number)
+   if n == nil or n < 0 then
+      return nil, field .. " is a whole, non-negative count of milliseconds since the epoch, got "
+         .. tostring(v)
+   end
+   return n
+end
+
+-- Days from 1970-01-01 to a civil date, proleptic Gregorian (Howard Hinnant's
+-- `days_from_civil`). `os.time` would read the fields as local time, and the offset it
+-- would add is the host's rather than the timestamp's.
+local function days_from_civil(y: integer, m: integer, d: integer): integer
+   if m <= 2 then
+      y = y - 1
+   end
+   local era = y // 400
+   local yoe = y - era * 400
+   local mp = m + 9
+   if m > 2 then
+      mp = m - 3
+   end
+   local doy = (153 * mp + 2) // 5 + d - 1
+   local doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+   return era * 146097 + doe - 719468
+end
+
+--- Milliseconds since the epoch for an ISO 8601 UTC timestamp: `2026-04-11T18:12:36Z`,
+--- with an optional fraction (`.250`) and `+00:00` accepted for the `Z`. An offset other
+--- than zero, a date with no time and anything else is refused rather than guessed at —
+--- a timestamp that has to be interpreted is one a reader and a writer can disagree on.
+function cards.utc_ms(text: string): integer, string
+   if type(text) ~= "string" then
+      return nil, "a timestamp is an ISO 8601 UTC string, got a " .. type(text)
+   end
+   local y, mo, d, h, mi, sec, rest = text:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)(.*)$")
+   local frac = "0"
+   if rest ~= nil then
+      local f, zone = (rest as string):match("^%.(%d+)(.*)$")
+      if f ~= nil then
+         frac = (f as string):sub(1, 3)
+         frac = frac .. string.rep("0", 3 - #frac)
+         rest = zone
+      end
+   end
+   if y == nil or (rest ~= "Z" and rest ~= "+00:00") then
+      return nil, "a timestamp is ISO 8601 in UTC, like 2026-04-11T18:12:36Z, got "
+         .. string.format("%q", text)
+   end
+   local month, day = math.tointeger(tonumber(mo)), math.tointeger(tonumber(d))
+   local hour, minute, second = math.tointeger(tonumber(h)), math.tointeger(tonumber(mi)), math.tointeger(tonumber(sec))
+   if month < 1 or month > 12 or day < 1 or day > 31 or hour > 23 or minute > 59 or second > 60 then
+      return nil, "a timestamp names no such time: " .. string.format("%q", text)
+   end
+   local days = days_from_civil(math.tointeger(tonumber(y)), month, day)
+   local seconds = ((days * 24 + hour) * 60 + minute) * 60 + second
+   return seconds * 1000 + math.tointeger(tonumber(frac))
+end
+
+--- The ISO 8601 UTC string for a millisecond count, to the second: `utc_ms`'s inverse,
+--- less the fraction.
+function cards.utc_iso(ms: integer): string
+   return os.date("!%Y-%m-%dT%H:%M:%SZ", ms // 1000) as string
 end
 
 -- Why `append_if` declined a dependent event. The decision only says no; the two reasons
@@ -340,6 +430,10 @@ function cards.open(s: store, spec: cards.OpenSpec): cards.Card, string
       return nil, "work_url is a URL with a scheme (file:///abs/dir, https://..., s3://...), got "
          .. string.format("%q", work_url)
    end
+   local started_ms, sterr = optional_ms(spec.started_ms, "started_ms")
+   if sterr ~= nil then
+      return nil, sterr
+   end
    local fingerprint: string
    if spec.params ~= nil then
       if type(spec.params) ~= "table" then
@@ -363,6 +457,9 @@ function cards.open(s: store, spec: cards.OpenSpec): cards.Card, string
       trace_id = trace_id,
       work_url = work_url,
       fingerprint = fingerprint,
+      -- Absent rather than filled with the clock here: the fold reads an absent one as
+      -- the event's own `epoch_ms`, which is the store's clock and the write's instant.
+      started_ms = started_ms,
    }
    local data = { parents = parents, note = spec.note, params = spec.params }
    local rec, aerr = s:append_if(stream, "unwritten", "card_opened", meta, data)
@@ -679,12 +776,33 @@ function cards.close(s: store, id: string, outcome: cards.Outcome): store.Record
    if outcome.cost ~= nil and type(outcome.cost) ~= "table" then
       return nil, "close takes cost as a table"
    end
+   local ended_ms, eerr = optional_ms(outcome.ended_ms, "ended_ms")
+   if eerr ~= nil then
+      return nil, eerr
+   end
+   if ended_ms ~= nil then
+      -- A run cannot end before it started. The start is read from the model rather than
+      -- the stream: it is caught up under the write lock, and a card with no row yet is
+      -- one the append below refuses anyway.
+      local rows, qerr = s:query("SELECT started_ms FROM cb_cards WHERE id = ?", { card })
+      if rows == nil then
+         return nil, qerr
+      end
+      local started: integer
+      if #rows == 1 then
+         started = (rows[1] as {string:any}).started_ms as integer
+      end
+      if started ~= nil and ended_ms < started then
+         return nil, "ended_ms " .. tostring(ended_ms) .. " is before card " .. card
+            .. " started (" .. tostring(started) .. "): a run ends no earlier than it starts"
+      end
+   end
 
    local label = "failed"
    if outcome.ok then
       label = "ok"
    end
-   local meta = { outcome = label }
+   local meta = { outcome = label, ended_ms = ended_ms }
    local data = { stats = outcome.stats, cost = outcome.cost, error = outcome.error }
    local rec, aerr = s:append_if("card-" .. card, "open_unclosed", "card_closed", meta, data)
    if aerr ~= nil then
@@ -743,7 +861,11 @@ function cards.fold(s: store, id: string): cards.CardView, string
       if e.kind == "card_opened" then
          opened = true
          view.opened_ms = e.epoch_ms
+         view.started_ms = e.epoch_ms
          if meta ~= nil then
+            if meta.started_ms ~= nil then
+               view.started_ms = meta.started_ms as integer
+            end
             view.pkg = meta.pkg as string
             view.scenario = meta.scenario as string
             view.source = meta.source as string
@@ -786,6 +908,10 @@ function cards.fold(s: store, id: string): cards.CardView, string
          end
       elseif e.kind == "card_closed" then
          view.closed_ms = e.epoch_ms
+         view.ended_ms = e.epoch_ms
+         if meta ~= nil and meta.ended_ms ~= nil then
+            view.ended_ms = meta.ended_ms as integer
+         end
          view.state = "closed_failed"
          if meta ~= nil and (meta.outcome as string) == "ok" then
             view.state = "closed_ok"
@@ -829,7 +955,8 @@ function cards.get(s: store, id: string): cards.CardView, string
    end
 
    local rows, qerr = s:query(
-      "SELECT id, pkg, scenario, source, created_by, note, state, opened_ms, closed_ms, "
+      "SELECT id, pkg, scenario, source, created_by, note, state, started_ms, ended_ms, "
+         .. "opened_ms, closed_ms, "
          .. "model, trace_id, work_url, fingerprint, params_json, "
          .. "error, stats_json, cost_json, sample_batches, sample_rows, eval_count "
          .. "FROM cb_cards WHERE id = ?",
@@ -855,6 +982,8 @@ function cards.get(s: store, id: string): cards.CardView, string
       work_url = row.work_url as string,
       fingerprint = row.fingerprint as string,
       state = row.state as string,
+      started_ms = row.started_ms as integer,
+      ended_ms = row.ended_ms as integer,
       opened_ms = row.opened_ms as integer,
       closed_ms = row.closed_ms as integer,
       error = row.error as string,
